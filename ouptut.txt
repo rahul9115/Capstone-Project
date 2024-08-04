@@ -1,0 +1,1 @@
+{'input': StringPromptValue(text='\n    Please search for job roles related to  Data Scientist that sponsor H1B on Linkedln and get me the role, company and job description. \n    Get me those as the output.\n    '), 'output': 'The roles, companies, and job descriptions related to Data Scientist positions that sponsor H1B on LinkedIn are available.'}
