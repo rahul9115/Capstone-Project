@@ -17,9 +17,9 @@ def ice_break_with(name,media_type):
     # linkedln_data=scrape_linkedln_profile(linkedln_profile_url=linkedln_username)
     open_ai_key=os.environ['OPENAI_API_KEY']
     summary_template="""
-    Based on the information given 
+    Based on the given information
     Information: {information} 
-    can you summarize the job description for me
+    give me the sentiment of the news
     """
     summary_prompt_template= PromptTemplate(template=summary_template)
     llm=ChatOpenAI(temperature=0,http_client=http_client)
@@ -35,7 +35,7 @@ if __name__=="__main__":
     load_dotenv()
     abs_path=os.getcwd()
     print(abs_path)
-    ice_break_with("Data Scientist","nothing")
+    ice_break_with("Apple company","nothing")
     # df=pd.read_excel(abs_path+"\\ice_breaker\\input.xlsx")
     # df=df[2:]
    
