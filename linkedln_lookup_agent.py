@@ -31,7 +31,7 @@ load_dotenv()
 def lookup(name, media_type) :
     llm=ChatOpenAI(temperature=0)
     summary_template = """
-    Please search for job roles related to  {name_of_person} that sponsor H1B on Linkedln and get me the role, company and job description. 
+    Please search for job roles related to  {name_of_person} on Linkedln. 
     Get me those as the output.
     """
     search = SearchApiAPIWrapper(http_client=https_client)

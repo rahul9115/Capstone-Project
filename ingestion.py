@@ -148,9 +148,8 @@ class JobSearch:
         result=retrieval_chain.invoke(input={"input":result})
         print("Result", result)
 
-        
 search=JobSearch()
-search.jobs_api_call()
+# search.jobs_api_call()
 search.store_data_pinecone("resume-index",pdf=True)
 search.store_data_pinecone("jobs-index",pdf=False)
 search.RAG()
