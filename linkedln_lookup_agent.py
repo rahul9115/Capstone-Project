@@ -31,7 +31,7 @@ load_dotenv()
 def lookup(name, media_type) :
     llm=ChatOpenAI(temperature=0)
     summary_template = """
-    Please search for job roles related to  {name_of_person} on Linkedln. 
+    Please give me the 10 latest news pertaining to {name_of_person} company . Don't give me the values
     Get me those as the output.
     """
     search = SearchApiAPIWrapper(http_client=https_client)
@@ -40,13 +40,11 @@ def lookup(name, media_type) :
    
     tools_for_agent=[
         Tool(
-            name=f"Search for Jobs",
+            name=f"Search for news",
             func=search.run,
-            description=f"Useful for getting available jobs from search APIs"
+            description=f"Useful for getting stock news"
         )
     ]
-    # ssl._create_default_https_context = ssl._create_unverified_context
-    requests.Session.verify = False
     react_prompt=hub.pull("hwchase17/react")
     agent=create_react_agent(llm=llm,tools=tools_for_agent,prompt=react_prompt)
     agent_executor=AgentExecutor(agent=agent,tools=tools_for_agent,verbose=True,handle_parsing_errors=True)

@@ -42,17 +42,21 @@ class StockPrediction():
         self.stock_data=None
         self.stock_predictions=None
         self.actual_data=None
+        self.real_time_data=None
     
     def loading_stock_data(self,start_date,end_date):
         self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date)
         self.stock_data.reset_index(inplace=True)
-        self.stock_data.to_csv(f"{self.stock_name}.csv")
+        self.stock_data=self.stock_data[["Datetime","Open","Close","Volume"]]
+        self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
+        
         
     def real_time_stock_market_data(self):
         now=datetime.now()
-        end_time = datetime.combine(now.date(), time(00, 45))
+        print("Todays timestamp",now)
+        end_time = datetime.combine(now.date(), time(16, 40))
         real_time_stock_data_list=[]
-        options={0:"Previous Close",1:"Open",2:"Day's Range",3:"52 week range",4:"Volume",5:"Avg Volume",6:"Market Cap",7:"PE Ratio",8:"EPS",9:"1y Target Est"}
+        options={0:"Previous Close",1:"Open",2:"Day's Range",3:"52 week range",4:"Volume",5:"Volume",6:"Market Cap",7:"PE Ratio",8:"EPS",9:"1y Target Est"}
         url=f"https://finance.yahoo.com/quote/{self.stock_name}/?p={self.stock_name}&.tsrc=fin-srch"
         interval=datetime.now()
         while interval<=end_time:
@@ -66,18 +70,26 @@ class StockPrediction():
                 inner_html = price.decode_contents()
                 close_price=inner_html.split("<span>")[1].split("<")[0]
             k=0
-            data["Date"]=interval
+            data["Datetime"]=interval.strftime('%Y-%m-%d %H:%M')
             data["Close"]=close_price
             for price in open_price:
                 inner_html = price.decode_contents()
                 data[options.get(k)]=[inner_html.strip()]
                 k+=1
-            print(data)
             df=pd.DataFrame(data=data)
             print(df.head())
+            df["Open"]=df["Open"].astype(float)
+            df["Close"]=df["Close"].astype(float)
+            df["Volume"]=df["Volume"].apply(lambda x:int(x.replace(",","")))
+            print(df.head())
+            
             real_time_stock_data_list.append(df)
-            pd.concat(real_time_stock_data_list).to_csv(f"{self.stock_name}_real_time_data.csv")
+            self.real_time_data=pd.concat(real_time_stock_data_list)
+            self.real_time_data=self.real_time_data[["Datetime","Open","Close","Volume"]]
+            self.real_time_data.to_csv(f"{self.stock_name}_real_time_data.csv",index=False)
             time_new.sleep(60)
+        self.stock_data=pd.concat([self.stock_data,self.real_time_data])
+        self.stock_data.to_csv(f"{self.stock_name}.csv",index=False)
         
     def train_nbeats_model(self):
         vertical=self.stock_data
@@ -178,7 +190,6 @@ class StockPrediction():
         new_df=pd.DataFrame(data)
         final_verticals_df.append(new_df)
         self.stock_predictions=pd.concat(final_verticals_df)
-
         self.stock_predictions.to_csv(f"{self.stock_name}_predictions.csv")
     
     def stock_future_plot(self,start_date,end_date):
@@ -235,14 +246,20 @@ class StockPrediction():
         plt.plot(output["date"][1:],output[column][:-1],color="b")
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         plt.show()
-
-start_date="2024-08-13"
-end_date="2024-08-15"
-date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-new_date_obj = date_obj + timedelta(days=2)
-new_date = new_date_obj.strftime("%Y-%m-%d")
+date=datetime.now().date()
+weekday=date.weekday()
+if weekday==0:
+    start_date=date-timedelta(days=5)
+    end_date=start_date+timedelta(days=2)
+# elif weekday!=5 and weekday!=6:
+start_date=date-timedelta(days=3)
+end_date=start_date+timedelta(days=2)
+# date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+# new_date_obj = date_obj + timedelta(days=2)
+# new_date = new_date_obj.strftime("%Y-%m-%d")
 sp=StockPrediction("AAPL")
 sp.loading_stock_data(start_date,end_date)
-sp.train_nbeats_model()
-# sp.stock_test_plot(end_date,new_date)
-sp.stock_future_plot(end_date,new_date)
+sp.real_time_stock_market_data()
+# sp.train_nbeats_model()
+# # sp.stock_test_plot(end_date,new_date)
+# sp.stock_future_plot(end_date,new_date)
