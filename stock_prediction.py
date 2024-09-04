@@ -31,7 +31,12 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import time as time_new
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using device",device)
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+
+
 # yfinance = YFinance()
 # df = yfinance.query(['AAPL'], start_date='3/1/2023', end_date='3/6/2024')
 
@@ -47,8 +52,10 @@ class StockPrediction():
     def loading_stock_data(self,start_date,end_date):
         self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date)
         self.stock_data.reset_index(inplace=True)
-        self.stock_data=self.stock_data[["Datetime","Open","Close","Volume"]]
+        self.stock_data=self.stock_data[["Datetime","Open"]]
+        self.stock_data["Forecasted"]=[None]*len(self.stock_data)
         self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
+        self.stock_data.to_csv(f"{self.stock_name}.csv")
         
         
     def real_time_stock_market_data(self):
@@ -56,57 +63,61 @@ class StockPrediction():
         print("Todays timestamp",now)
         end_time = datetime.combine(now.date(), time(16, 40))
         real_time_stock_data_list=[]
-        options={0:"Previous Close",1:"Open",2:"Day's Range",3:"52 week range",4:"Volume",5:"Volume",6:"Market Cap",7:"PE Ratio",8:"EPS",9:"1y Target Est"}
-        url=f"https://finance.yahoo.com/quote/{self.stock_name}/?p={self.stock_name}&.tsrc=fin-srch"
+        options={0:"Current Traded Price",1:"Open",2:"Day's Range",3:"52 week range",4:"Volume",5:"Volume",6:"Market Cap",7:"PE Ratio",8:"EPS",9:"1y Target Est"}
+        url=f"https://www.marketwatch.com/investing/stock/aapl"
         interval=datetime.now()
         while interval<=end_time:
             interval=datetime.now()
+            chromeOptions = webdriver.ChromeOptions()
+            chromeOptions.add_argument("window-size=1200x600")
+            browser = webdriver.Chrome(options=chromeOptions)
+            url=f'https://finance.yahoo.com/quote/AAPL/'
+            browser.get(url)
+            fin_streamer =browser.find_element("xpath","/html/body/div[1]/main/section/section/section/article/section[1]/div[2]/div[1]/section/div/section/div[1]/fin-streamer[1]")
+            span_element = fin_streamer.find_element(By.TAG_NAME, 'span')
+            current_price = span_element.get_attribute('innerHTML')
+            
+            print("Using device",device)
             data={}
-            response=requests.get(url)
-            soup=BeautifulSoup(response.text,'lxml')
-            close_price=soup.find_all('fin-streamer',{'class':"price yf-mgkamr"})
-            open_price=soup.find_all('fin-streamer',{'class':"yf-tx3nkj"})
-            for price in close_price:
-                inner_html = price.decode_contents()
-                close_price=inner_html.split("<span>")[1].split("<")[0]
             k=0
             data["Datetime"]=interval.strftime('%Y-%m-%d %H:%M')
-            data["Close"]=close_price
-            for price in open_price:
-                inner_html = price.decode_contents()
-                data[options.get(k)]=[inner_html.strip()]
-                k+=1
+            data["Traded Price"]=[current_price]
+            
+            print("The data",data)
             df=pd.DataFrame(data=data)
             print(df.head())
-            df["Open"]=df["Open"].astype(float)
-            df["Close"]=df["Close"].astype(float)
-            df["Volume"]=df["Volume"].apply(lambda x:int(x.replace(",","")))
+            df["Traded Price"]=df["Traded Price"].astype(float)
+            # df["Close"]=df["Close"].astype(float)
+            # df["Volume"]=df["Volume"].apply(lambda x:int(x.replace(",","")))
             print(df.head())
             
             real_time_stock_data_list.append(df)
             self.real_time_data=pd.concat(real_time_stock_data_list)
-            self.real_time_data=self.real_time_data[["Datetime","Open","Close","Volume"]]
+            # self.real_time_data=self.real_time_data[["Datetime","Open","Close","Volume"]]
             self.real_time_data.to_csv(f"{self.stock_name}_real_time_data.csv",index=False)
-            time_new.sleep(60)
-        self.stock_data=pd.concat([self.stock_data,self.real_time_data])
-        self.stock_data.to_csv(f"{self.stock_name}.csv",index=False)
+            # self.stock_data=pd.concat([self.stock_data,self.real_time_data])
+            # self.stock_data.to_csv(f"{self.stock_name}.csv",index=False)
         
+            time_new.sleep(60)
+     
     def train_nbeats_model(self):
+        print("The device used is",device)
+        torch.set_float32_matmul_precision("low")
         vertical=self.stock_data
         LOAD = False        
-        EPOCHS = 5
-        INLEN = 1   
+        EPOCHS = 3
+        INLEN = 10
         BLOCKS = 64         
         LWIDTH = 32
-        BATCH = 1          
-        LEARN = 1e-3        
+        BATCH = 32       
+        LEARN = 1e-5        
         VALWAIT = 1         
         N_FC = 1            
         RAND = 42           
         N_SAMPLES = 10 
         N_JOBS = 3          
-        QUANTILES = [0.01,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.99]
-        SPLIT = 0.9 
+        QUANTILES = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
+        SPLIT = 0.8 
         qL1, qL2 = 0.01, 0.10        
         qU1, qU2 = 1-qL1, 1-qL2,     
         label_q1 = f'{int(qU1 * 100)} / {int(qL1 * 100)} percentile band'
@@ -115,10 +126,10 @@ class StockPrediction():
         vertical=vertical.loc[:,vertical.columns.str.contains("Datetime|Open")]
         vertical["Datetime"]=pd.to_datetime(vertical['Datetime'])
         vertical.rename(columns={"Datetime":"time"},inplace=True)
-        ts_P = TimeSeries.from_dataframe(vertical,time_col="time",fill_missing_dates=True,freq="15min")
+        ts_P = TimeSeries.from_dataframe(vertical,time_col="time",fill_missing_dates=True,freq="1min")
         ts_P=ts_P.pd_dataframe()
         ts_P.to_csv("Values.csv")
-        ts_P.fillna(0, inplace=True)
+        ts_P.fillna(vertical["Open"].values[-1], inplace=True)
         ts_P = TimeSeries.from_dataframe(ts_P)
         ts_train, ts_test = ts_P.split_after(SPLIT) 
         scalerP = Scaler()
@@ -172,7 +183,7 @@ class StockPrediction():
         dfY.iloc[np.r_[0:2, -2:0]]
         end = ts_tpred.end_time()
         print("The prediction starting point",vertical["time"].values[-1])
-        future_dates = pd.date_range(start=vertical["time"].values[-1], periods=200, freq='15min')
+        future_dates = pd.date_range(start=vertical["time"].values[-1], periods=50, freq='1min')
         values1=model.predict(n=len(future_dates),
                         num_samples=N_SAMPLES,  
                         n_jobs=N_JOBS, 
@@ -186,11 +197,32 @@ class StockPrediction():
             data.update({f"p_{quantiles}_mape":metrics[quantiles]})
         val=list(data.values())[0]
         print(len(val))
-        data.update({"date":future_dates})
+        data.update({"Datetime":future_dates})
         new_df=pd.DataFrame(data)
         final_verticals_df.append(new_df)
         self.stock_predictions=pd.concat(final_verticals_df)
-        self.stock_predictions.to_csv(f"{self.stock_name}_predictions.csv")
+        self.stock_predictions['Datetime'] = pd.to_datetime(self.stock_predictions['Datetime'])
+        columns=[i for i in self.stock_predictions.columns if "mape" in i]
+        min1=float("inf")
+        column=None
+        for i in columns:
+            val=self.stock_predictions[i].values[0]
+            if val<min1:
+                column=i
+                min1=val
+        column=column.split("_mape")[0]
+        output=self.stock_predictions[["Datetime",column]]
+        output.rename(columns={column:"Forecasted"},inplace=True)
+        output=output[(output["Datetime"]>=vertical["time"].values[-1])]
+                    #   & (output["Datetime"]<pd.to_datetime(f"{start_date} 16:00"))]
+        output["Open"]=[None]*len(output)
+        print("predictions",output)
+        self.stock_predictions=pd.concat([self.stock_data,output])
+        self.stock_predictions.to_csv("predictions.csv")
+        
+
+
+        
     
     def stock_future_plot(self,start_date,end_date):
         self.stock_predictions=pd.read_csv(f"{self.stock_name}_predictions.csv")
@@ -252,14 +284,14 @@ if weekday==0:
     start_date=date-timedelta(days=5)
     end_date=start_date+timedelta(days=2)
 # elif weekday!=5 and weekday!=6:
-start_date=date-timedelta(days=3)
-end_date=start_date+timedelta(days=2)
+start_date=date-timedelta(days=6)
+end_date=date+timedelta(days=1)
 # date_obj = datetime.strptime(end_date, "%Y-%m-%d")
 # new_date_obj = date_obj + timedelta(days=2)
 # new_date = new_date_obj.strftime("%Y-%m-%d")
 sp=StockPrediction("AAPL")
 sp.loading_stock_data(start_date,end_date)
-sp.real_time_stock_market_data()
-# sp.train_nbeats_model()
+# sp.real_time_stock_market_data()
+sp.train_nbeats_model()
 # # sp.stock_test_plot(end_date,new_date)
 # sp.stock_future_plot(end_date,new_date)
