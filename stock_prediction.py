@@ -50,12 +50,19 @@ class StockPrediction():
         self.real_time_data=None
     
     def loading_stock_data(self,start_date,end_date):
-        self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date)
-        self.stock_data.reset_index(inplace=True)
-        self.stock_data=self.stock_data[["Datetime","Open"]]
-        self.stock_data["Forecasted"]=[None]*len(self.stock_data)
-        self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
-        self.stock_data.to_csv(f"{self.stock_name}.csv")
+        # self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date)
+        # self.stock_data.reset_index(inplace=True)
+        # self.stock_data=self.stock_data[["Datetime","Open"]]
+        # self.stock_data["Forecasted"]=[0]*len(self.stock_data)
+        # self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
+        # self.stock_data.to_csv(f"{self.stock_name}.csv")
+        self.stock_data=pd.read_csv("AAPL.csv")
+        self.stock_data["Forecasted"]=[0]*len(self.stock_data)
+        self.stock_data["p_0.1"]=[0]*len(self.stock_data)
+        self.stock_data["p_0.5"]=[0]*len(self.stock_data)
+        self.stock_data["p_0.9"]=[0]*len(self.stock_data)
+
+
         
         
     def real_time_stock_market_data(self):
@@ -76,7 +83,6 @@ class StockPrediction():
             fin_streamer =browser.find_element("xpath","/html/body/div[1]/main/section/section/section/article/section[1]/div[2]/div[1]/section/div/section/div[1]/fin-streamer[1]")
             span_element = fin_streamer.find_element(By.TAG_NAME, 'span')
             current_price = span_element.get_attribute('innerHTML')
-            
             print("Using device",device)
             data={}
             k=0
@@ -97,7 +103,6 @@ class StockPrediction():
             self.real_time_data.to_csv(f"{self.stock_name}_real_time_data.csv",index=False)
             # self.stock_data=pd.concat([self.stock_data,self.real_time_data])
             # self.stock_data.to_csv(f"{self.stock_name}.csv",index=False)
-        
             time_new.sleep(60)
      
     def train_nbeats_model(self):
@@ -182,8 +187,8 @@ class StockPrediction():
         dfY.insert(1, col.name, col)
         dfY.iloc[np.r_[0:2, -2:0]]
         end = ts_tpred.end_time()
-        print("The prediction starting point",vertical["time"].values[-1])
-        future_dates = pd.date_range(start=vertical["time"].values[-1], periods=50, freq='1min')
+        last_date=pd.Timestamp(vertical["time"].values[-1])+timedelta(minutes=1)
+        future_dates = pd.date_range(start=last_date, periods=50, freq='1min')
         values1=model.predict(n=len(future_dates),
                         num_samples=N_SAMPLES,  
                         n_jobs=N_JOBS, 
@@ -211,19 +216,40 @@ class StockPrediction():
                 column=i
                 min1=val
         column=column.split("_mape")[0]
-        output=self.stock_predictions[["Datetime",column]]
-        output.rename(columns={column:"Forecasted"},inplace=True)
-        output=output[(output["Datetime"]>=vertical["time"].values[-1])]
-                    #   & (output["Datetime"]<pd.to_datetime(f"{start_date} 16:00"))]
-        output["Open"]=[None]*len(output)
-        print("predictions",output)
-        self.stock_predictions=pd.concat([self.stock_data,output])
+        # output=output[(output["Datetime"]<pd.to_datetime(f"{start_date} 9:30")) & (output["Datetime"]<pd.to_datetime(f"{start_date} 16:00"))]
+        self.stock_predictions.to_csv("predictions.csv")
+        if column=="p_0.1":
+            output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.9"]]
+            output["Open"]=[0]*len(output)
+            self.stock_data.drop("p_0.1",axis=1,inplace=True)
+            output.rename(columns={column:"Forecasted"},inplace=True)
+            self.stock_predictions=pd.concat([self.stock_data,output])
+            data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
+        elif column=="p_0.5":
+            output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.9"]]
+            output=output[(output["Datetime"]>=vertical["time"].values[-1])]
+            self.stock_data.drop("p_0.5",axis=1,inplace=True)
+            output["Open"]=[0]*len(output)
+            self.stock_predictions=pd.concat([self.stock_data,output])
+            data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
+        elif column=="p_0.9":
+            output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.1","p_0.9"]]
+            output=output[(output["Datetime"]>=vertical["time"].values[-1])]
+            self.stock_data.drop("p_0.9",axis=1,inplace=True)
+            output["Open"]=[0]*len(output)
+            self.stock_predictions=pd.concat([self.stock_data,output])
+            data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"length":len(self.stock_data)}
+        else:
+            self.stock_data[column]=[0]*len(self.stock_data)
+            output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.5","p_0.9"]]
+            output["Open"]=[0]*len(output)
+            self.stock_predictions=pd.concat([self.stock_data,output])
+            data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
         self.stock_predictions.to_csv("predictions.csv")
         
-
-
+        print(data)
+        return data
         
-    
     def stock_future_plot(self,start_date,end_date):
         self.stock_predictions=pd.read_csv(f"{self.stock_name}_predictions.csv")
         self.stock_predictions['date'] = pd.to_datetime(self.stock_predictions['date'])
@@ -278,20 +304,20 @@ class StockPrediction():
         plt.plot(output["date"][1:],output[column][:-1],color="b")
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         plt.show()
-date=datetime.now().date()
-weekday=date.weekday()
-if weekday==0:
-    start_date=date-timedelta(days=5)
-    end_date=start_date+timedelta(days=2)
+# date=datetime.now().date()
+# weekday=date.weekday()
+# if weekday==0:
+    # start_date=date-timedelta(days=5)
+    # end_date=start_date+timedelta(days=2)
 # elif weekday!=5 and weekday!=6:
-start_date=date-timedelta(days=6)
-end_date=date+timedelta(days=1)
+# start_date=date-timedelta(days=6)
+# end_date=date+timedelta(days=1)
 # date_obj = datetime.strptime(end_date, "%Y-%m-%d")
 # new_date_obj = date_obj + timedelta(days=2)
 # new_date = new_date_obj.strftime("%Y-%m-%d")
-sp=StockPrediction("AAPL")
-sp.loading_stock_data(start_date,end_date)
+# sp=StockPrediction("AAPL")
+# sp.loading_stock_data(start_date,end_date)
 # sp.real_time_stock_market_data()
-sp.train_nbeats_model()
+# sp.train_nbeats_model()
 # # sp.stock_test_plot(end_date,new_date)
 # sp.stock_future_plot(end_date,new_date)
