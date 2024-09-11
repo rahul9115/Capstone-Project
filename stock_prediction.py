@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 import numpy as np
 from pybroker import YFinance
 import pybroker
@@ -50,13 +51,13 @@ class StockPrediction():
         self.real_time_data=None
     
     def loading_stock_data(self,start_date,end_date):
-        # self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date)
-        # self.stock_data.reset_index(inplace=True)
-        # self.stock_data=self.stock_data[["Datetime","Open"]]
-        # self.stock_data["Forecasted"]=[0]*len(self.stock_data)
-        # self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
-        # self.stock_data.to_csv(f"{self.stock_name}.csv")
-        self.stock_data=pd.read_csv("AAPL.csv")
+        self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date)
+        self.stock_data.reset_index(inplace=True)
+        self.stock_data=self.stock_data[["Datetime","Open"]]
+        self.stock_data["Forecasted"]=[0]*len(self.stock_data)
+        self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
+        self.stock_data.to_csv(f"{self.stock_name}.csv")
+        # self.stock_data=pd.read_csv("AAPL.csv")
         self.stock_data["Forecasted"]=[0]*len(self.stock_data)
         self.stock_data["p_0.1"]=[0]*len(self.stock_data)
         self.stock_data["p_0.5"]=[0]*len(self.stock_data)
@@ -182,13 +183,13 @@ class StockPrediction():
                                 n_jobs=N_JOBS, 
                                 verbose=True)
 
-        _ = [predQ(ts_tpred, q) for q in QUANTILES]
+        _ = [predQ(ts_tpred, q) for q in QUANTILES] 
         col = dfY.pop("Q50")
         dfY.insert(1, col.name, col)
         dfY.iloc[np.r_[0:2, -2:0]]
         end = ts_tpred.end_time()
-        last_date=pd.Timestamp(vertical["time"].values[-1])+timedelta(minutes=1)
-        future_dates = pd.date_range(start=last_date, periods=50, freq='1min')
+        # last_date=pd.Timestamp(vertical["time"].values[-1])+timedelta(minutes=1)
+        future_dates = pd.date_range(start=vertical["time"].values[-1], periods=15, freq='1min')
         values1=model.predict(n=len(future_dates),
                         num_samples=N_SAMPLES,  
                         n_jobs=N_JOBS, 
@@ -218,32 +219,59 @@ class StockPrediction():
         column=column.split("_mape")[0]
         # output=output[(output["Datetime"]<pd.to_datetime(f"{start_date} 9:30")) & (output["Datetime"]<pd.to_datetime(f"{start_date} 16:00"))]
         self.stock_predictions.to_csv("predictions.csv")
+        rtp=pd.read_csv("real_time_predictions.csv")
+        rtp=rtp.loc[:,~rtp.columns.str.contains("^Unnamed")]
+        real_time_predictions=[rtp]
+        time=timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         if column=="p_0.1":
             output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.9"]]
+            
             output["Open"]=[0]*len(output)
-            self.stock_data.drop("p_0.1",axis=1,inplace=True)
             output.rename(columns={column:"Forecasted"},inplace=True)
+            output.to_csv(os.getcwd()+f"\\predictions\\predictions_{time}.csv")
+            real_time_predictions.append(output)
+            rtp=pd.concat(real_time_predictions)
+            rtp.drop_duplicates(inplace=True)
+            rtp.to_csv("real_time_predictions.csv",index=False)
             self.stock_predictions=pd.concat([self.stock_data,output])
+            
             data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
         elif column=="p_0.5":
             output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.9"]]
+            output[["Datetime",column]].to_csv("real_time_predictions.csv")
             output=output[(output["Datetime"]>=vertical["time"].values[-1])]
-            self.stock_data.drop("p_0.5",axis=1,inplace=True)
             output["Open"]=[0]*len(output)
+            output.rename(columns={column:"Forecasted"},inplace=True)
+            output.to_csv(os.getcwd()+f"\\predictions\\predictions_{time}.csv")
+            real_time_predictions.append(output)
+            rtp=pd.concat(real_time_predictions)
+            # rtp.drop_duplicates(inplace=True)
+            rtp.to_csv("real_time_predictions.csv",index=False)
             self.stock_predictions=pd.concat([self.stock_data,output])
             data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
         elif column=="p_0.9":
             output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.1","p_0.9"]]
             output=output[(output["Datetime"]>=vertical["time"].values[-1])]
-            self.stock_data.drop("p_0.9",axis=1,inplace=True)
             output["Open"]=[0]*len(output)
+            output.rename(columns={column:"Forecasted"},inplace=True)
+            output.to_csv(os.getcwd()+f"\\predictions\\predictions_{time}.csv")
+            real_time_predictions.append(output)
+            rtp=pd.concat(real_time_predictions)
+            rtp.drop_duplicates(inplace=True)
+            rtp.to_csv("real_time_predictions.csv",index=False)
             self.stock_predictions=pd.concat([self.stock_data,output])
             data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"length":len(self.stock_data)}
         else:
             self.stock_data[column]=[0]*len(self.stock_data)
             output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.5","p_0.9"]]
             output["Open"]=[0]*len(output)
+            output.rename(columns={column:"Forecasted"},inplace=True)
+            output.to_csv(os.getcwd()+f"\\predictions\\predictions_{time}.csv")
             self.stock_predictions=pd.concat([self.stock_data,output])
+            real_time_predictions.append(output)
+            rtp=pd.concat(real_time_predictions)
+            rtp.drop_duplicates(inplace=True)
+            rtp.to_csv("real_time_predictions.csv",index=False)
             data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
         self.stock_predictions.to_csv("predictions.csv")
         
