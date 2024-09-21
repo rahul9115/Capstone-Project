@@ -20,6 +20,7 @@ import yfinance as yf
 from matplotlib.ticker import MaxNLocator
 from sklearn.preprocessing import MinMaxScaler
 import ssl
+import optuna
 ssl._create_default_https_context = ssl._create_unverified_context
 pybroker.enable_data_source_cache('yfinance')
 import pandas as pd
@@ -36,7 +37,9 @@ from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
-
+from nixtla import NixtlaClient
+from dotenv import load_dotenv
+load_dotenv()
 
 # yfinance = YFinance()
 # df = yfinance.query(['AAPL'], start_date='3/1/2023', end_date='3/6/2024')
@@ -51,7 +54,7 @@ class StockPrediction():
         self.real_time_data=None
     
     def loading_stock_data(self,start_date,end_date):
-        self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date)
+        self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date, prepost=True)
         self.stock_data.reset_index(inplace=True)
         self.stock_data=self.stock_data[["Datetime","Open"]]
         self.stock_data["Forecasted"]=[0]*len(self.stock_data)
@@ -62,6 +65,16 @@ class StockPrediction():
         self.stock_data["p_0.1"]=[0]*len(self.stock_data)
         self.stock_data["p_0.5"]=[0]*len(self.stock_data)
         self.stock_data["p_0.9"]=[0]*len(self.stock_data)
+    
+    def time_gpt_model(self):
+        nixtla_client=NixtlaClient(api_key=os.environ.get("NIXTLA_API_KEY"))
+        input_data=self.stock_data.rename(columns={"Datetime":'ds',"Open":"y"})
+        ts_P = TimeSeries.from_dataframe(input_data,time_col="ds",fill_missing_dates=True,freq="1min")
+        ts_P=ts_P.pd_dataframe()
+        ts_P.fillna(input_data["y"].values[-1], inplace=True)
+        forecast_data = nixtla_client.forecast(ts_P, h=100, level=[80, 90])
+        print("Forecast data\n",forecast_data)
+
 
 
         
@@ -105,7 +118,8 @@ class StockPrediction():
             # self.stock_data=pd.concat([self.stock_data,self.real_time_data])
             # self.stock_data.to_csv(f"{self.stock_name}.csv",index=False)
             time_new.sleep(60)
-     
+   
+
     def train_nbeats_model(self):
         print("The device used is",device)
         torch.set_float32_matmul_precision("low")
@@ -115,8 +129,8 @@ class StockPrediction():
         INLEN = 10
         BLOCKS = 64         
         LWIDTH = 32
-        BATCH = 32       
-        LEARN = 1e-5        
+        BATCH = 32
+        LEARN = 1e-5
         VALWAIT = 1         
         N_FC = 1            
         RAND = 42           
@@ -143,15 +157,47 @@ class StockPrediction():
         ts_ttrain = scalerP.transform(ts_train)
         ts_ttest = scalerP.transform(ts_test)    
         ts_t = scalerP.transform(ts_P)
-        model = NBEATSModel(input_chunk_length=INLEN,
-                            output_chunk_length=N_FC, 
+        def objective(trial):
+            # Define the hyperparameter search space
+            input_chunk_length = trial.suggest_int('input_chunk_length', 5, 50)  
+            output_chunk_length = trial.suggest_int('output_chunk_length', 1, 20)  
+            batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128])  
+            lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-2)
+            model = NBEATSModel(
+                input_chunk_length=input_chunk_length,
+                output_chunk_length=output_chunk_length,
+                batch_size=batch_size,
+                optimizer_kwargs={'lr': lr},
+                n_epochs=3,  
+                random_state=42
+            )
+
+            # Fit the model on the training data
+            model.fit(series=ts_ttrain, 
+                    val_series=ts_ttest, 
+                    verbose=True)
+            
+            # Evaluate the model on the validation set
+            preds = model.predict(len(ts_ttest))
+            score = mape(ts_test, preds)  # Use Mean Absolute Percentage Error as evaluation metric
+            
+            return score
+        study = optuna.create_study(direction='minimize')  # We minimize the evaluation metric, e.g., MAPE
+        study.optimize(objective, n_trials=10)
+        best_params = study.best_params
+        print(f"Best hyperparameters: {study.best_params}")
+        print(f"Best MAPE score: {study.best_value}")
+        with open("output1.txt","w") as file:
+            file.write(str(study.best_params)+" "+str(study.best_value))
+        model = NBEATSModel(input_chunk_length=best_params['input_chunk_length'],
+                            output_chunk_length=best_params['output_chunk_length'], 
                             num_stacks=BLOCKS,
                             layer_widths=LWIDTH,
-                            batch_size=BATCH,
+                            batch_size=best_params['batch_size'],
                             n_epochs=EPOCHS,
                             nr_epochs_val_period=VALWAIT, 
                             likelihood=QuantileRegression(QUANTILES), 
-                            optimizer_kwargs={"lr": LEARN}, 
+                            optimizer_kwargs={"lr": best_params['learning_rate']}, 
                             model_name="NBEATS_EnergyES",
                             log_tensorboard=True,
                             generic_architecture=True, 
@@ -228,7 +274,8 @@ class StockPrediction():
             
             output["Open"]=[0]*len(output)
             output.rename(columns={column:"Forecasted"},inplace=True)
-            output.to_csv(os.getcwd()+f"\\predictions\\predictions_{time}.csv")
+            os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
+            output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
             real_time_predictions.append(output)
             rtp=pd.concat(real_time_predictions)
             rtp.drop_duplicates(inplace=True)
@@ -242,7 +289,8 @@ class StockPrediction():
             output=output[(output["Datetime"]>=vertical["time"].values[-1])]
             output["Open"]=[0]*len(output)
             output.rename(columns={column:"Forecasted"},inplace=True)
-            output.to_csv(os.getcwd()+f"\\predictions\\predictions_{time}.csv")
+            os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
+            output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
             real_time_predictions.append(output)
             rtp=pd.concat(real_time_predictions)
             # rtp.drop_duplicates(inplace=True)
@@ -254,7 +302,8 @@ class StockPrediction():
             output=output[(output["Datetime"]>=vertical["time"].values[-1])]
             output["Open"]=[0]*len(output)
             output.rename(columns={column:"Forecasted"},inplace=True)
-            output.to_csv(os.getcwd()+f"\\predictions\\predictions_{time}.csv")
+            os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
+            output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
             real_time_predictions.append(output)
             rtp=pd.concat(real_time_predictions)
             rtp.drop_duplicates(inplace=True)
@@ -266,7 +315,8 @@ class StockPrediction():
             output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.5","p_0.9"]]
             output["Open"]=[0]*len(output)
             output.rename(columns={column:"Forecasted"},inplace=True)
-            output.to_csv(os.getcwd()+f"\\predictions\\predictions_{time}.csv")
+            os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
+            output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
             self.stock_predictions=pd.concat([self.stock_data,output])
             real_time_predictions.append(output)
             rtp=pd.concat(real_time_predictions)
@@ -293,7 +343,7 @@ class StockPrediction():
         output=self.stock_predictions
         # output=output[(output["date"]>=pd.to_datetime(start_date)) & (output["date"]<pd.to_datetime(start_date))]
         print(start_date,end_date)
-        output=output[(output["date"]>=pd.to_datetime(f"{start_date} 9:00")) & (output["date"]<pd.to_datetime(f"{start_date} 16:00"))]
+        output=output[(output["date"]>=pd.to_datetime(f"{datetime.now().date()} 9:00")) & (output["date"]<pd.to_datetime(f"{datetime.now().date()} 16:00"))]
         plt.plot(output["date"][:-1],output[column][1:],color="b")
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         plt.show()
@@ -332,19 +382,22 @@ class StockPrediction():
         plt.plot(output["date"][1:],output[column][:-1],color="b")
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         plt.show()
-# date=datetime.now().date()
+date=datetime.now().date()
 # weekday=date.weekday()
 # if weekday==0:
     # start_date=date-timedelta(days=5)
     # end_date=start_date+timedelta(days=2)
 # elif weekday!=5 and weekday!=6:
-# start_date=date-timedelta(days=6)
-# end_date=date+timedelta(days=1)
+start_date=date-timedelta(days=1)
+end_date=date+timedelta(days=1)
+
+
 # date_obj = datetime.strptime(end_date, "%Y-%m-%d")
 # new_date_obj = date_obj + timedelta(days=2)
 # new_date = new_date_obj.strftime("%Y-%m-%d")
-# sp=StockPrediction("AAPL")
-# sp.loading_stock_data(start_date,end_date)
+sp=StockPrediction("AAPL")
+sp.loading_stock_data(start_date,end_date)
+sp.time_gpt_model()
 # sp.real_time_stock_market_data()
 # sp.train_nbeats_model()
 # # sp.stock_test_plot(end_date,new_date)
