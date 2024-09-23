@@ -1,0 +1,113 @@
+activation: ReLU
+batch_norm: false
+dropout: 0.0
+expansion_coefficient_dim: 5
+generic_architecture: true
+input_chunk_length: 11
+input_dim: 1
+layer_widths:
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+- 32
+likelihood: !!python/object:darts.utils.likelihood_models.QuantileRegression
+  _median_idx: 4
+  first: true
+  ignore_attrs_equality:
+  - first
+  - quantiles_tensor
+  prior_strength: 1.0
+  quantiles:
+  - 0.1
+  - 0.2
+  - 0.3
+  - 0.4
+  - 0.5
+  - 0.6
+  - 0.7
+  - 0.8
+  - 0.9
+  quantiles_tensor: null
+lr_scheduler_cls: null
+lr_scheduler_kwargs: null
+nr_params: 9
+num_blocks: 1
+num_layers: 4
+num_stacks: 64
+optimizer_cls: !!python/name:torch.optim.adam.Adam ''
+optimizer_kwargs:
+  lr: 0.0002498997077358997
+output_chunk_length: 10
+output_chunk_shift: 0
+output_dim: 1
+train_sample_shape:
+- !!python/tuple
+  - 11
+  - 1
+- null
+- null
+- !!python/tuple
+  - 10
+  - 1
+trend_polynomial_degree: 2
+use_reversible_instance_norm: false

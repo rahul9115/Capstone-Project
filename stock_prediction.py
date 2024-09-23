@@ -40,11 +40,10 @@ from selenium.webdriver.common.by import By
 from nixtla import NixtlaClient
 from dotenv import load_dotenv
 load_dotenv()
-
 # yfinance = YFinance()
 # df = yfinance.query(['AAPL'], start_date='3/1/2023', end_date='3/6/2024')
-
 # df['Datetime'] = pd.to_datetime(df['Datetime']).dt.date
+
 class StockPrediction():
     def __init__(self,stock_name):
         self.stock_name=stock_name
@@ -75,10 +74,6 @@ class StockPrediction():
         forecast_data = nixtla_client.forecast(ts_P, h=100, level=[80, 90])
         print("Forecast data\n",forecast_data)
 
-
-
-        
-        
     def real_time_stock_market_data(self):
         now=datetime.now()
         print("Todays timestamp",now)
