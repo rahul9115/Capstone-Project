@@ -3,7 +3,7 @@ batch_norm: false
 dropout: 0.0
 expansion_coefficient_dim: 5
 generic_architecture: true
-input_chunk_length: 11
+input_chunk_length: 43
 input_dim: 1
 layer_widths:
 - 32
@@ -96,18 +96,18 @@ num_layers: 4
 num_stacks: 64
 optimizer_cls: !!python/name:torch.optim.adam.Adam ''
 optimizer_kwargs:
-  lr: 0.0002498997077358997
-output_chunk_length: 10
+  lr: 0.001033565782686755
+output_chunk_length: 1
 output_chunk_shift: 0
 output_dim: 1
 train_sample_shape:
 - !!python/tuple
-  - 11
+  - 43
   - 1
 - null
 - null
 - !!python/tuple
-  - 10
+  - 1
   - 1
 trend_polynomial_degree: 2
 use_reversible_instance_norm: false

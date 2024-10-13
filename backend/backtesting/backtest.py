@@ -64,10 +64,11 @@ class Backtesting:
                         flag=False
                         break
             if flag==True:
-                self.stock_id=int(values[-1][0])+1
+                # self.stock_id=int(values[-1][0])+1
                 cursor.execute(query)
                 self.conn.commit()
                 cursor.close()
+                self.insert_queries("","stock_data")
                 self.conn.close()
             else:
                 print("The stock already exists")
@@ -81,10 +82,11 @@ class Backtesting:
                         break
             print("Here",flag)
             if flag==True:
-                self.alg_id=int(values[-1][0])+1
+                # self.alg_id=int(values[-1][0])+1
                 cursor.execute(query)
                 self.conn.commit()
                 cursor.close()
+                self.insert_queries("","forecasting_algorithms")
                 self.conn.close()
             else:
                 print("The algorithm already exists")
@@ -98,10 +100,11 @@ class Backtesting:
                         flag=False
                         break
             if flag==True:
-                self.simulation_id=int(values[-1][0])+1
+                # self.simulation_id=int(values[-1][0])+1
                 cursor.execute(query)
                 self.conn.commit()
                 cursor.close()
+                self.insert_queries("","backtest_simulation")
                 self.conn.close()
             else:
                 print("The simulation already exists")
@@ -114,13 +117,20 @@ class Backtesting:
                         flag=False
                         break
             if flag==True:
-                self.date_id=int(values[-1][0])+1
+                # self.date_id=int(values[-1][0])+1
                 cursor.execute(query)
                 self.conn.commit()
                 cursor.close()
+                self.insert_queries("","real_time_forecast_datetime")
                 self.conn.close()
             else:
                 print("The datetime already exists")
+        elif table_name=="forecasts":
+            cursor.execute(query)
+            self.conn.commit()
+            cursor.close()
+            self.conn.close()
+
 
     def yfinace_api(self):
         self.stock_data = yf.download(tickers=self.stock_ticker, interval='1m', start=self.start_date,end=self.end_date, prepost=True)
@@ -327,7 +337,17 @@ class Backtesting:
             output.to_csv("predictions.csv")
             print("Here",len(output["Forecasted"].values),len(vertical_test["Open"].values))
             print("Accuracy",self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values)))
-            pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")   
+            accuracy=self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values))
+            self.database_connection()
+            for forecast_value,timestamp,p_10,p_50,p_90,actual in zip(output["Forecasted"],output["Datetime"],output["Forecasted"],output["p_0.5"],output["p_0.9"],vertical_test["Open"]):
+                try:
+                    forecast_query=f"""
+                    insert into forecasts (date_id,simulation_id,alg_id,stock_id,forecast_value,accuracy,timestamp,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},{self.alg_id},{self.stock_id},{forecast_value},{accuracy},'{timestamp}',{p_10},{p_50},{p_90},{actual});
+                    """
+                    self.insert_queries(forecast_query,"forecasts")
+                except:
+                    continue
+            # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")   
         elif column=="p_0.5":
             output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.9"]]
             output[["Datetime",column]].to_csv("real_time_predictions.csv")
@@ -339,29 +359,54 @@ class Backtesting:
             output.to_csv("predictions.csv")
             print("Here",len(output["Forecasted"].values),len(vertical_test["Open"].values))
             print("Accuracy",self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values)))
-
-            pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")     
+            accuracy=self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values))
+            self.database_connection()
+            for forecast_value,timestamp,p_10,p_50,p_90,actual in zip(output["Forecasted"],output["Datetime"],output["p_0.1"],output["Forecasted"],output["p_0.9"],vertical_test["Open"]):
+                try:
+                    forecast_query=f"""
+                    insert into forecasts (date_id,simulation_id,alg_id,stock_id,forecast_value,accuracy,timestamp,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},{self.alg_id},{self.stock_id},{forecast_value},{accuracy},'{timestamp}',{p_10},{p_50},{p_90},{actual});
+                    """
+                    self.insert_queries(forecast_query,"forecasts")
+                except:
+                    continue
+            # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")     
         elif column=="p_0.9":
             output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.1"]]
             output=output[(output["Datetime"]>=vertical["time"].values[-1])]
             output["Open"]=[0]*len(output)
             output.rename(columns={column:"Forecasted"},inplace=True)
-            
             output=output[(output["Datetime"]>=pd.to_datetime(f"{self.start_date+timedelta(days=1)} 9:45")) & (output["Datetime"]<=pd.to_datetime(f"{self.start_date+timedelta(days=1)} 16:00"))]
             output.to_csv("predictions.csv")
             print("Here",len(output["Forecasted"].values),len(vertical_test["Open"].values))
-            print("Accuracy",self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values)))
-            pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")
+            accuracy=self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values))
+            self.database_connection()
+            for forecast_value,timestamp,p_10,p_50,p_90,actual in zip(output["Forecasted"],output["Datetime"],output["p_0.1"],output["p_0.5"],output["Forecasted"],vertical_test["Open"]):
+                try:
+                    forecast_query=f"""
+                    insert into forecasts (date_id,simulation_id,alg_id,stock_id,forecast_value,accuracy,timestamp,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},{self.alg_id},{self.stock_id},{forecast_value},{accuracy},'{timestamp}',{p_10},{p_50},{p_90},{actual});
+                    """
+                    self.insert_queries(forecast_query,"forecasts")
+                except:
+                    continue
+            # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")
         else:
             self.stock_data[column]=[0]*len(self.stock_data)
             output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.5","p_0.9"]]
             output["Open"]=[0]*len(output)
             output.rename(columns={column:"Forecasted"},inplace=True)
-            
             output=output[(output["Datetime"]>=pd.to_datetime(f"{self.start_date+timedelta(days=1)} 9:45")) & (output["Datetime"]<=pd.to_datetime(f"{self.start_date+timedelta(days=1)} 16:00"))]
             output.to_csv("predictions.csv")
-            print("Accuracy",self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values)))
-            pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")
+            accuracy=self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values))
+            self.database_connection()
+            for forecast_value,timestamp,p_10,p_50,p_90,actual in zip(output["Forecasted"],output["Datetime"],output["p_0.1"],output["p_0.5"],output["p_0.9"],vertical_test["Open"]):
+                try:
+                    forecast_query=f"""
+                    insert into forecasts (date_id,simulation_id,alg_id,stock_id,forecast_value,accuracy,timestamp,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},{self.alg_id},{self.stock_id},{forecast_value},{accuracy},'{timestamp}',{p_10},{p_50},{p_90},{actual});
+                    """
+                    self.insert_queries(forecast_query,"forecasts")
+                except:
+                    continue
+            # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")
         
 
 for i in range(11,-1,-1):
@@ -384,14 +429,16 @@ for i in range(11,-1,-1):
     insert into real_time_forecast_datetime (datetime) values('{bk.start_date}');
     """
   
-    # bk.database_connection()
-    # bk.insert_queries(stock_data_query,"stock_data")
-    # bk.database_connection()
-    # bk.insert_queries(forecasting_alg_query,"forecasting_algorithms")
-    # bk.database_connection()
-    # bk.insert_queries(backtest_simulation_query,"backtest_simulation")
-    # bk.database_connection()
-    # bk.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
+    bk.database_connection()
+    bk.insert_queries(stock_data_query,"stock_data")
+    bk.database_connection()
+    bk.insert_queries(forecasting_alg_query,"forecasting_algorithms")
+    bk.database_connection()
+    bk.insert_queries(backtest_simulation_query,"backtest_simulation")
+    bk.database_connection()
+    bk.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
+    print("The ids are as follows")
+    print(bk.date_id,bk.simulation_id,bk.alg_id,bk.stock_id)
     bk.yfinace_api()
     bk.train_nbeats_model()
     # bk.calculate_mape()

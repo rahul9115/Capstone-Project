@@ -65,7 +65,6 @@ CREATE TABLE IF NOT EXISTS stock_data (
 
 table5="""
 CREATE TABLE IF NOT EXISTS forecasts (
-    forecast_id SERIAL PRIMARY KEY,
     forecast_value REAL not null,
     date_id INTEGER NOT NULL,
     accuracy INTEGER NULL,
@@ -73,9 +72,11 @@ CREATE TABLE IF NOT EXISTS forecasts (
     timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     alg_id INTEGER NOT NULL,
     stock_id integer not null,
-    p_0.1 real null,
-    p_0.5 real null,
-    p_0.9 real null,
+    p_10 real null,
+    p_50 real null,
+    p_90 real null,
+    actual real null,
+    PRIMARY KEY (date_id, simulation_id, alg_id, stock_id, timestamp), 
     FOREIGN KEY (alg_id) REFERENCES forecasting_algorithms(alg_id),
     FOREIGN KEY (date_id) REFERENCES real_time_forecast_datetime(date_id),
     FOREIGN KEY (stock_id) REFERENCES stock_data(stock_id),
