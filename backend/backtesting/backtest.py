@@ -17,6 +17,7 @@ import optuna
 from dotenv import load_dotenv
 import pandas as pd
 import numpy as np
+from newsapi import NewsApiClient
 load_dotenv()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class Backtesting:
@@ -34,7 +35,26 @@ class Backtesting:
         self.date_id=None
         self.alg_id=None
         self.stock_id=None
-    
+    def load_news_api(self):
+        print("Here")
+        newsapi = NewsApiClient(api_key=os.environ.get("NEWS_API_KEY"))
+        # top_headlines = newsapi.get_top_headlines(q='bitcoin',
+        #                                   sources='bbc-news,the-verge',
+        #                                   category='business',
+        #                                   language='en',
+        #                                   country='us')
+        
+        all_articles = newsapi.get_everything(q='Apple stock',
+                                      from_param='2024-09-17',
+                                      to='2024-10-16',
+                                      language='en',
+                                      sort_by='relevancy',
+                                      page=5)
+        print(all_articles)
+        sources=newsapi.get_sources()
+        print(sources)
+
+
     def database_connection(self):
         try:
             params = load_config()
@@ -110,10 +130,12 @@ class Backtesting:
                 print("The simulation already exists")
         elif table_name=="real_time_forecast_datetime":
             flag=True
+          
             if len(values)>0:
                 for i in values:
                     if str(i[1].strftime('%Y-%m-%d'))==str(self.start_date):
                         self.date_id=i[0]
+                        print("In here",self.start_date,str(i[1].strftime('%Y-%m-%d')),self.date_id)
                         flag=False
                         break
             if flag==True:
@@ -126,13 +148,14 @@ class Backtesting:
             else:
                 print("The datetime already exists")
         elif table_name=="forecasts":
+            print("This",self.date_id)
             cursor.execute(query)
             self.conn.commit()
             cursor.close()
-            self.conn.close()
+            
 
 
-    def yfinace_api(self):
+    def yfinance_api(self):
         self.stock_data = yf.download(tickers=self.stock_ticker, interval='1m', start=self.start_date,end=self.end_date, prepost=True)
         self.stock_data.reset_index(inplace=True)
         print("values",self.stock_data)
@@ -148,21 +171,58 @@ class Backtesting:
     def time_gpt_model(self):
         nixtla_client=NixtlaClient(api_key=os.environ.get("NIXTLA_API_KEY"))
         input_data=self.stock_data.rename(columns={"Datetime":'ds',"Open":"y"})
+        input_data=input_data[["ds","y"]]
         ts_P = TimeSeries.from_dataframe(input_data,time_col="ds",fill_missing_dates=True,freq="1min")
         ts_P=ts_P.pd_dataframe()
-        ts_P.fillna(input_data["y"].values[-1], inplace=True)
+        values=[]
+        print("In here")
+        for index,value in enumerate(ts_P["y"]):
+            if str(value)=="nan":
+                values.append(values[index-1])
+            else:
+                values.append(value)
+        ts_P["y"]=values
         forecast_data = nixtla_client.forecast(ts_P, h=100, level=[80, 90])
-        print("Forecast data\n",forecast_data)
+        print('Check',pd.to_datetime(forecast_data["ds"].values[0]))
+        real_time_forecast_datetime_query=f"""
+                    insert into real_time_forecast_datetime (datetime) values('{pd.to_datetime(forecast_data["ds"].values[0]).date()}');
+                    """
+        self.database_connection()
+        self.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
+        self.database_connection()
+        accuracy=self.calculate_mape(forecast_data["TimeGPT"].values,ts_P["y"].values)
+        for forecast_value,timestamp,timegpt_hi_80,timegpt_hi_90,timegpt_lo_90,timegpt_lo_80,actual in zip(forecast_data["TimeGPT"],forecast_data["ds"],forecast_data["TimeGPT-hi-80"],forecast_data["TimeGPT-hi-90"],forecast_data["TimeGPT-lo-90"],forecast_data["TimeGPT-lo-80"],ts_P["y"]):
+                try:
+                    forecast_query=f"""
+                    insert into forecasts (date_id,simulation_id,timestamp,alg_id,stock_id,forecast_value,accuracy,timegpt_hi_80,timegpt_hi_90,timegpt_lo_80,timegpt_lo_90,actual) values({self.date_id},{self.simulation_id},'{timestamp}',{self.alg_id},{self.stock_id},{forecast_value},{accuracy},{timegpt_hi_80},{timegpt_hi_90},{timegpt_lo_80},{timegpt_lo_90},{actual});
+                    """
+                    self.insert_queries(forecast_query,"forecasts")
+                except Exception as e:
+                    print(timestamp)
+                    print(e)
+                    self.conn.rollback()
+                    continue
+
+
+
     def calculate_mape(self,forecasts,actuals):
-        print("forecasts",forecasts)
-        print("actuals",actuals)
         sum1=0
+        ndz=1e-10
         for i,j in zip(actuals,forecasts):
             print(i,j,np.abs(i-j))
-            sum1+=float(np.abs(i-j)/i)
-            print(sum1)
+            sum1+=float(np.abs(i-j)/max(i,ndz))
         mape=(sum1*100)/len(actuals)
         return mape
+    
+    def calculate_mape_time_series(self,actuals,forecasts):
+        sum1=0
+        forecasts=forecasts.pd_dataframe(forecasts).values
+        actuals=actuals.pd_dataframe(actuals).values
+        for i,j in zip(actuals[0],forecasts[0]):
+            sum1+=float(np.abs(i-j)/i)
+        mape=(sum1*100)/len(actuals[0])
+        return mape
+    
     def train_nbeats_model(self):
         print("The device used is",device)
         from datetime import time
@@ -241,7 +301,7 @@ class Backtesting:
                     val_series=ts_ttest, 
                     verbose=True)
             preds = model.predict(len(ts_ttest))
-            score = mape(ts_test, preds)
+            score = self.calculate_mape_time_series(ts_test, preds)
             return score
         study = optuna.create_study(direction='minimize')
         study.optimize(objective, n_trials=10)
@@ -296,6 +356,13 @@ class Backtesting:
         dfY.iloc[np.r_[0:2, -2:0]]
         end = ts_tpred.end_time()
         # last_date=pd.Timestamp(vertical["time"].values[-1])+timedelta(minutes=1)
+        print('Check',pd.to_datetime(vertical["time"].values[-1]).date())
+        real_time_forecast_datetime_query=f"""
+                    insert into real_time_forecast_datetime (datetime) values('{pd.to_datetime(vertical["time"].values[-1]).date()}');
+                    """
+        self.database_connection()
+        self.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
+        
         future_dates = pd.date_range(start=vertical["time"].values[-1], periods=380, freq='1min')
         values1=model.predict(n=len(future_dates),
                         num_samples=N_SAMPLES,  
@@ -338,15 +405,20 @@ class Backtesting:
             print("Here",len(output["Forecasted"].values),len(vertical_test["Open"].values))
             print("Accuracy",self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values)))
             accuracy=self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values))
+            print("Accuracy:",accuracy)
             self.database_connection()
             for forecast_value,timestamp,p_10,p_50,p_90,actual in zip(output["Forecasted"],output["Datetime"],output["Forecasted"],output["p_0.5"],output["p_0.9"],vertical_test["Open"]):
                 try:
                     forecast_query=f"""
-                    insert into forecasts (date_id,simulation_id,alg_id,stock_id,forecast_value,accuracy,timestamp,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},{self.alg_id},{self.stock_id},{forecast_value},{accuracy},'{timestamp}',{p_10},{p_50},{p_90},{actual});
+                    insert into forecasts (date_id,simulation_id,timestamp,alg_id,stock_id,forecast_value,accuracy,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},'{timestamp}',{self.alg_id},{self.stock_id},{forecast_value},{accuracy},{p_10},{p_50},{p_90},{actual});
                     """
                     self.insert_queries(forecast_query,"forecasts")
-                except:
+                except Exception as e:
+                    print(timestamp)
+                    print(e)
+                    self.conn.rollback()
                     continue
+            self.conn.close()
             # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")   
         elif column=="p_0.5":
             output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.9"]]
@@ -360,15 +432,20 @@ class Backtesting:
             print("Here",len(output["Forecasted"].values),len(vertical_test["Open"].values))
             print("Accuracy",self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values)))
             accuracy=self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values))
+            print("Accuracy:",accuracy)
             self.database_connection()
             for forecast_value,timestamp,p_10,p_50,p_90,actual in zip(output["Forecasted"],output["Datetime"],output["p_0.1"],output["Forecasted"],output["p_0.9"],vertical_test["Open"]):
                 try:
                     forecast_query=f"""
-                    insert into forecasts (date_id,simulation_id,alg_id,stock_id,forecast_value,accuracy,timestamp,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},{self.alg_id},{self.stock_id},{forecast_value},{accuracy},'{timestamp}',{p_10},{p_50},{p_90},{actual});
+                    insert into forecasts (date_id,simulation_id,timestamp,alg_id,stock_id,forecast_value,accuracy,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},'{timestamp}',{self.alg_id},{self.stock_id},{forecast_value},{accuracy},{p_10},{p_50},{p_90},{actual});
                     """
                     self.insert_queries(forecast_query,"forecasts")
-                except:
+                except Exception as e:
+                    print(timestamp)
+                    print(e)
+                    self.conn.rollback()
                     continue
+            self.conn.close()
             # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")     
         elif column=="p_0.9":
             output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.1"]]
@@ -379,15 +456,20 @@ class Backtesting:
             output.to_csv("predictions.csv")
             print("Here",len(output["Forecasted"].values),len(vertical_test["Open"].values))
             accuracy=self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values))
+            print("Accuracy:",accuracy)
             self.database_connection()
             for forecast_value,timestamp,p_10,p_50,p_90,actual in zip(output["Forecasted"],output["Datetime"],output["p_0.1"],output["p_0.5"],output["Forecasted"],vertical_test["Open"]):
                 try:
                     forecast_query=f"""
-                    insert into forecasts (date_id,simulation_id,alg_id,stock_id,forecast_value,accuracy,timestamp,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},{self.alg_id},{self.stock_id},{forecast_value},{accuracy},'{timestamp}',{p_10},{p_50},{p_90},{actual});
+                    insert into forecasts (date_id,simulation_id,timestamp,alg_id,stock_id,forecast_value,accuracy,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},'{timestamp}',{self.alg_id},{self.stock_id},{forecast_value},{accuracy},{p_10},{p_50},{p_90},{actual});
                     """
                     self.insert_queries(forecast_query,"forecasts")
-                except:
+                except Exception as e:
+                    print(timestamp)
+                    print(e)
+                    self.conn.rollback()
                     continue
+            self.conn.close()
             # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")
         else:
             self.stock_data[column]=[0]*len(self.stock_data)
@@ -397,50 +479,128 @@ class Backtesting:
             output=output[(output["Datetime"]>=pd.to_datetime(f"{self.start_date+timedelta(days=1)} 9:45")) & (output["Datetime"]<=pd.to_datetime(f"{self.start_date+timedelta(days=1)} 16:00"))]
             output.to_csv("predictions.csv")
             accuracy=self.calculate_mape(list(output["Forecasted"].values),list(vertical_test["Open"].values))
+            print("Accuracy:",accuracy)
             self.database_connection()
             for forecast_value,timestamp,p_10,p_50,p_90,actual in zip(output["Forecasted"],output["Datetime"],output["p_0.1"],output["p_0.5"],output["p_0.9"],vertical_test["Open"]):
                 try:
                     forecast_query=f"""
-                    insert into forecasts (date_id,simulation_id,alg_id,stock_id,forecast_value,accuracy,timestamp,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},{self.alg_id},{self.stock_id},{forecast_value},{accuracy},'{timestamp}',{p_10},{p_50},{p_90},{actual});
+                    insert into forecasts (date_id,simulation_id,timestamp,alg_id,stock_id,forecast_value,accuracy,p_10,p_50,p_90,actual) values({self.date_id},{self.simulation_id},'{timestamp}',{self.alg_id},{self.stock_id},{forecast_value},{accuracy},{p_10},{p_50},{p_90},{actual});
                     """
                     self.insert_queries(forecast_query,"forecasts")
-                except:
+                except Exception as e:
+                    print(timestamp)
+                    print(e)
+                    self.conn.rollback()
                     continue
+            self.conn.close()
             # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")
-        
 
-for i in range(11,-1,-1):
-    date=datetime.now().date()
-    
-    start_date=date-timedelta(days=i)
-    end_date = start_date+timedelta(days=2)
-    training_period="1D"
-    bk=Backtesting(None,"Apple Inc","AAPL","NBEATS",start_date,end_date,training_period)
-    stock_data_query=f"""
-    insert into stock_data (stock_name,stock_ticker) values('{bk.stock_name}','{bk.stock_ticker}');
-    """
-    forecasting_alg_query=f"""
-    insert into forecasting_algorithms (name) values('{bk.forecasting_algorithm}');
-    """
-    backtest_simulation_query=f"""
-    insert into backtest_simulation (training_period) values('{bk.training_period}');
-    """
-    real_time_forecast_datetime_query=f"""
-    insert into real_time_forecast_datetime (datetime) values('{bk.start_date}');
-    """
-  
-    bk.database_connection()
-    bk.insert_queries(stock_data_query,"stock_data")
-    bk.database_connection()
-    bk.insert_queries(forecasting_alg_query,"forecasting_algorithms")
-    bk.database_connection()
-    bk.insert_queries(backtest_simulation_query,"backtest_simulation")
-    bk.database_connection()
-    bk.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
-    print("The ids are as follows")
-    print(bk.date_id,bk.simulation_id,bk.alg_id,bk.stock_id)
-    bk.yfinace_api()
-    bk.train_nbeats_model()
-    # bk.calculate_mape()
-    break
+# date=datetime.now().date()
+# start_date=date-timedelta(days=1)
+# end_date = start_date+timedelta(days=2)
+# start_weekday=start_date.weekday()
+# end_weekday=end_date.weekday() 
+# training_period="1D"       
+# bk=Backtesting(None,"Apple Inc","AAPL","Time GPT",start_date,end_date,training_period)
+# bk.load_news_api()
+# exit()
+# training_period="1D"
+# bk=Backtesting(None,"Apple Inc","AAPL","NBEATS",start_date,end_date,training_period)
+# stock_data_query=f"""
+# insert into stock_data (stock_name,stock_ticker) values('{bk.stock_name}','{bk.stock_ticker}');
+# """
+# forecasting_alg_query=f"""
+# insert into forecasting_algorithms (name) values('{bk.forecasting_algorithm}');
+# """
+# backtest_simulation_query=f"""
+# insert into backtest_simulation (training_period) values('{bk.training_period}');
+# """
+# real_time_forecast_datetime_query=f"""
+# insert into real_time_forecast_datetime (datetime) values('{bk.start_date}');
+# """
+
+# bk.database_connection()
+# bk.insert_queries(stock_data_query,"stock_data")
+# bk.database_connection()
+# bk.insert_queries(forecasting_alg_query,"forecasting_algorithms")
+# bk.database_connection()
+# bk.insert_queries(backtest_simulation_query,"backtest_simulation")
+# bk.yfinance_api()
+# bk.time_gpt_model()
+# bk.database_connection()
+# bk.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
+# exit()
+for stock_name,stock_ticker in zip(["Apple Inc","Amazon","Alphabet Inc.","Tesla Inc"],["AAPL","AMZN","GOOG","TSLA"]):
+    for i in range(26,-1,-1):
+        try:
+            date=datetime.now().date()
+            start_date=date-timedelta(days=i)
+            end_date = start_date+timedelta(days=2)
+            start_weekday=start_date.weekday()
+            end_weekday=end_date.weekday()
+            print("Start Date",start_date)
+            
+            if start_weekday==0 or start_weekday==6:
+                continue
+            training_period="1D"
+            bk=Backtesting(None,stock_name,stock_ticker,"Nbeats",start_date,end_date,training_period)
+            stock_data_query=f"""
+            insert into stock_data (stock_name,stock_ticker) values('{bk.stock_name}','{bk.stock_ticker}');
+            """
+            forecasting_alg_query=f"""
+            insert into forecasting_algorithms (name) values('{bk.forecasting_algorithm}');
+            """
+            backtest_simulation_query=f"""
+            insert into backtest_simulation (training_period) values('{bk.training_period}');
+            """
+            real_time_forecast_datetime_query=f"""
+            insert into real_time_forecast_datetime (datetime) values('{bk.start_date}');
+            """
+            bk.database_connection()
+            bk.insert_queries(stock_data_query,"stock_data")
+            bk.database_connection()
+            bk.insert_queries(forecasting_alg_query,"forecasting_algorithms")
+            bk.database_connection()
+            bk.insert_queries(backtest_simulation_query,"backtest_simulation")
+            bk.database_connection()
+            bk.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
+            # exit()
+            try:
+                bk.yfinance_api()
+            except Exception as e:
+                continue
+            bk.train_nbeats_model()
+
+            training_period="1D"
+            bk=Backtesting(None,stock_name,stock_ticker,"Time GPT",start_date,end_date,training_period)
+            stock_data_query=f"""
+            insert into stock_data (stock_name,stock_ticker) values('{bk.stock_name}','{bk.stock_ticker}');
+            """
+            forecasting_alg_query=f"""
+            insert into forecasting_algorithms (name) values('{bk.forecasting_algorithm}');
+            """
+            backtest_simulation_query=f"""
+            insert into backtest_simulation (training_period) values('{bk.training_period}');
+            """
+            real_time_forecast_datetime_query=f"""
+            insert into real_time_forecast_datetime (datetime) values('{bk.start_date}');
+            """
+            bk.database_connection()
+            bk.insert_queries(stock_data_query,"stock_data")
+            bk.database_connection()
+            bk.insert_queries(forecasting_alg_query,"forecasting_algorithms")
+            bk.database_connection()
+            bk.insert_queries(backtest_simulation_query,"backtest_simulation")
+            bk.database_connection()
+            bk.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
+            try:
+                bk.yfinance_api()
+            except Exception as e:
+                continue
+            bk.time_gpt_model()
+        except:
+            continue
+       
+   
+        
     

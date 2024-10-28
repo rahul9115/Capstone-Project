@@ -67,7 +67,7 @@ table5="""
 CREATE TABLE IF NOT EXISTS forecasts (
     forecast_value REAL not null,
     date_id INTEGER NOT NULL,
-    accuracy INTEGER NULL,
+    accuracy real NULL,
     simulation_id integer not null,
     timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     alg_id INTEGER NOT NULL,
@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS forecasts (
     p_50 real null,
     p_90 real null,
     actual real null,
+    TimeGPT_hi_80 REAL NULL,
+    TimeGPT_hi_90 REAL NULL,
+    TimeGPT_lo_80 REAL NULL,
+    TimeGPT_lo_90 REAL NULL,
     PRIMARY KEY (date_id, simulation_id, alg_id, stock_id, timestamp), 
     FOREIGN KEY (alg_id) REFERENCES forecasting_algorithms(alg_id),
     FOREIGN KEY (date_id) REFERENCES real_time_forecast_datetime(date_id),
@@ -83,7 +87,6 @@ CREATE TABLE IF NOT EXISTS forecasts (
     FOREIGN KEY (simulation_id) REFERENCES backtest_simulation(simulation_id)
 );
 """
-
 
 for i in [drop_tables_query,table1,table2,table3,table4,table5]:
     db.connect()

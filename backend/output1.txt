@@ -1,0 +1,1 @@
+{'input_chunk_length': 9, 'output_chunk_length': 9, 'batch_size': 64, 'learning_rate': 0.008555433032240876} 99.61298726508055
