@@ -35,25 +35,81 @@ class Backtesting:
         self.date_id=None
         self.alg_id=None
         self.stock_id=None
-    def load_news_api(self):
-        print("Here")
-        newsapi = NewsApiClient(api_key=os.environ.get("NEWS_API_KEY"))
-        # top_headlines = newsapi.get_top_headlines(q='bitcoin',
-        #                                   sources='bbc-news,the-verge',
-        #                                   category='business',
-        #                                   language='en',
-        #                                   country='us')
-        
-        all_articles = newsapi.get_everything(q='Apple stock',
-                                      from_param='2024-09-17',
-                                      to='2024-10-16',
-                                      language='en',
-                                      sort_by='relevancy',
-                                      page=5)
-        print(all_articles)
-        sources=newsapi.get_sources()
-        print(sources)
+        self.news_data=None
 
+    def integrate_yfiance_news(self):
+        self.stock_data["Datetime"]=pd.to_datetime(self.stock_data["Datetime"])
+        merged_data=pd.merge(self.stock_data,self.news_data,on="Datetime",how="left")
+        merged_data.reset_index(inplace=True)
+        merged_data.to_csv("yfiance_&_news_data.csv")
+
+    def load_news_api(self,start_date,end_date,general=False):
+        if general:
+            newsapi = NewsApiClient(api_key=os.environ.get("NEWS_API_KEY"))
+            all_articles = newsapi.get_everything(q=f'Top USA news',
+                                        from_param=str(start_date),
+                                        to=str(end_date),
+                                        language='en',
+                                        sort_by='relevancy',
+                                        page=5)
+            source_name=[]
+            author=[]
+            title=[]
+            description=[]
+            content=[]
+            url=[]
+            date=[]
+            for i in all_articles['articles']:
+                source_name.append(i["source"]["name"])
+                author.append(i['author'])
+                title.append(i["title"])
+                content.append(i["content"])
+                description.append(i["description"])
+                url.append(i["url"])    
+                date.append(datetime.strptime(i["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M"))
+            self.news_data=pd.DataFrame(data={"Datetime":date,"News Source":source_name,"News author":author,"News Headline":title,"News Description":description,"News URL":url,"News content":content})
+            self.news_data.to_csv("news_data.csv",index=False)
+            self.news_data.sort_values("Datetime",inplace=True)
+            self.news_data['Datetime'] = pd.to_datetime(self.news_data['Datetime'])
+            self.news_data.drop_duplicates(subset=["Datetime"],inplace=True,keep="first")
+            self.news_data.set_index('Datetime', inplace=True)
+            full_datetime_range = pd.date_range(start=self.news_data.index.min(), end=self.news_data.index.max(), freq='min')
+            self.news_data = self.news_data.reindex(full_datetime_range, method='ffill')
+            self.news_data.reset_index(inplace=True)
+            self.news_data.rename(columns={'index': 'Datetime'}, inplace=True)
+        else:
+            newsapi = NewsApiClient(api_key=os.environ.get("NEWS_API_KEY"))
+            all_articles = newsapi.get_everything(q=f'{self.stock_name} news',
+                                          from_param=str(start_date),
+                                          to=str(end_date),
+                                          language='en',
+                                          sort_by='relevancy',
+                                          page=5)
+            source_name=[]
+            author=[]
+            title=[]
+            description=[]
+            content=[]
+            url=[]
+            date=[]
+            for i in all_articles['articles']:
+                source_name.append(i["source"]["name"])
+                author.append(i['author'])
+                title.append(i["title"])
+                content.append(i["content"])
+                description.append(i["description"])
+                url.append(i["url"])    
+                date.append(datetime.strptime(i["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M"))
+            self.news_data=pd.DataFrame(data={"Datetime":date,"News Source":source_name,"News author":author,"News Headline":title,"News Description":description,"News URL":url,"News content":content})
+            self.news_data.to_csv("news_data.csv",index=False)
+            self.news_data.sort_values("Datetime",inplace=True)
+            self.news_data['Datetime'] = pd.to_datetime(self.news_data['Datetime'])
+            self.news_data.drop_duplicates(subset=["Datetime"],inplace=True,keep="first")
+            self.news_data.set_index('Datetime', inplace=True)
+            full_datetime_range = pd.date_range(start=self.news_data.index.min(), end=self.news_data.index.max(), freq='min')
+            self.news_data = self.news_data.reindex(full_datetime_range, method='ffill')
+            self.news_data.reset_index(inplace=True)
+            self.news_data.rename(columns={'index': 'Datetime'}, inplace=True)
 
     def database_connection(self):
         try:
@@ -153,20 +209,25 @@ class Backtesting:
             self.conn.commit()
             cursor.close()
             
-
-
-    def yfinance_api(self):
-        self.stock_data = yf.download(tickers=self.stock_ticker, interval='1m', start=self.start_date,end=self.end_date, prepost=True)
-        self.stock_data.reset_index(inplace=True)
-        print("values",self.stock_data)
-        self.stock_data=self.stock_data[["Datetime","Open"]]
-        self.stock_data["Forecasted"]=[0]*len(self.stock_data)
-        self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
-        self.stock_data.to_csv(f"{self.stock_name}.csv")
-        self.stock_data["Forecasted"]=[0]*len(self.stock_data)
-        self.stock_data["p_0.1"]=[0]*len(self.stock_data)
-        self.stock_data["p_0.5"]=[0]*len(self.stock_data)
-        self.stock_data["p_0.9"]=[0]*len(self.stock_data)
+    def yfinance_api(self,news=False):
+        if news:
+            self.stock_data = yf.download(tickers=self.stock_ticker, interval='1m', start=self.start_date,end=self.end_date, prepost=True)
+            self.stock_data.reset_index(inplace=True)
+            self.stock_data=self.stock_data[["Datetime","Open","Close"]]
+            self.stock_data["Forecasted"]=[0]*len(self.stock_data)
+            self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
+            self.stock_data.to_csv(f"{self.stock_name}.csv")
+        else:
+            self.stock_data = yf.download(tickers=self.stock_ticker, interval='1m', start=self.start_date,end=self.end_date, prepost=True)
+            self.stock_data.reset_index(inplace=True)
+            self.stock_data=self.stock_data[["Datetime","Open","Close"]]
+            self.stock_data["Forecasted"]=[0]*len(self.stock_data)
+            self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
+            self.stock_data.to_csv(f"{self.stock_name}.csv")
+            self.stock_data["Forecasted"]=[0]*len(self.stock_data)
+            self.stock_data["p_0.1"]=[0]*len(self.stock_data)
+            self.stock_data["p_0.5"]=[0]*len(self.stock_data)
+            self.stock_data["p_0.9"]=[0]*len(self.stock_data)
     
     def time_gpt_model(self):
         nixtla_client=NixtlaClient(api_key=os.environ.get("NIXTLA_API_KEY"))
@@ -203,8 +264,6 @@ class Backtesting:
                     self.conn.rollback()
                     continue
 
-
-
     def calculate_mape(self,forecasts,actuals):
         sum1=0
         ndz=1e-10
@@ -227,7 +286,6 @@ class Backtesting:
         print("The device used is",device)
         from datetime import time
         torch.set_float32_matmul_precision("low")
-
         vertical=self.stock_data
         LOAD = False        
         EPOCHS = 3
@@ -495,14 +553,17 @@ class Backtesting:
             self.conn.close()
             # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")
 
-# date=datetime.now().date()
-# start_date=date-timedelta(days=1)
-# end_date = start_date+timedelta(days=2)
-# start_weekday=start_date.weekday()
-# end_weekday=end_date.weekday() 
-# training_period="1D"       
-# bk=Backtesting(None,"Apple Inc","AAPL","Time GPT",start_date,end_date,training_period)
-# bk.load_news_api()
+date=datetime.now().date()
+start_date=date-timedelta(days=7)
+end_date = start_date+timedelta(days=1)
+start_weekday=start_date.weekday()
+end_weekday=end_date.weekday() 
+training_period="1D"       
+bk=Backtesting(None,"Apple Inc","AAPL","Time GPT",start_date,date,training_period)
+bk.load_news_api(start_date-timedelta(days=23),date,False)
+bk.yfinance_api(True)
+bk.integrate_yfiance_news()
+exit()
 # exit()
 # training_period="1D"
 # bk=Backtesting(None,"Apple Inc","AAPL","NBEATS",start_date,end_date,training_period)
