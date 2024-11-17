@@ -4,7 +4,7 @@ from datetime import datetime,timedelta, time
 import yfinance as yf
 from darts import TimeSeries, concatenate
 from darts.dataprocessing.transformers import Scaler
-from darts.models import NBEATSModel
+from darts.models import NBEATSModel, NHiTSModel, TiDEModel, TSMixerModel
 from darts.metrics import mape, rmse 
 from darts.utils.timeseries_generation import datetime_attribute_timeseries
 from darts.utils.likelihood_models import QuantileRegression
@@ -18,8 +18,36 @@ from dotenv import load_dotenv
 import pandas as pd
 import numpy as np
 from newsapi import NewsApiClient
+from transformers import (AutoModelForCausalLM,
+                          AutoTokenizer,
+                          BitsAndBytesConfig,
+                          TrainingArguments,
+                          pipeline,
+                          logging)
 load_dotenv()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+LOAD = False        
+EPOCHS = 3
+INLEN = 10
+BLOCKS = 64         
+LWIDTH = 32
+BATCH = 32
+LEARN = 1e-5
+VALWAIT = 1         
+N_FC = 1            
+RAND = 42           
+N_SAMPLES = 10 
+N_JOBS = 3          
+QUANTILES = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
+SPLIT = 0.8 
+qL1, qL2 = 0.01, 0.10        
+qU1, qU2 = 1-qL1, 1-qL2,     
+label_q1 = f'{int(qU1 * 100)} / {int(qL1 * 100)} percentile band'
+label_q2 = f'{int(qU2 * 100)} / {int(qL2 * 100)} percentile band'
+NUM_BLOCKS = 4
+LAYER_WIDTHS = 128
+POOLING_KERNEL_SIZES = [2, 2, 2]
+merged_data_list=[]
 class Backtesting:
     def __init__(self,conn,stock_name,stock_ticker,forecasting_algorithm,start_date,end_date,training_period,news_description=None,news_source=None):
         self.training_period=training_period
@@ -36,17 +64,38 @@ class Backtesting:
         self.alg_id=None
         self.stock_id=None
         self.news_data=None
+        self.model_name=None
 
-    def integrate_yfiance_news(self):
-        self.stock_data["Datetime"]=pd.to_datetime(self.stock_data["Datetime"])
-        merged_data=pd.merge(self.stock_data,self.news_data,on="Datetime",how="left")
-        merged_data.reset_index(inplace=True)
-        merged_data.to_csv("yfiance_&_news_data.csv")
+    def integrate_yfiance_news(self,general):
+        if general:
+            self.stock_data["Datetime"]=pd.to_datetime(self.stock_data["Datetime"])
+            merged_data=pd.merge(self.stock_data,self.news_data,on="Datetime",how="left")
+            merged_data.reset_index(inplace=True)
+            merged_data_list.append(merged_data)
+            merged_data=pd.concat(merged_data_list)
+            merged_data.sort_values(by="Datetime",inplace=True)
+            merged_data.to_csv("yfiance_&_news_data_general.csv")
+        else:
+            self.stock_data["Datetime"]=pd.to_datetime(self.stock_data["Datetime"])
+            merged_data=pd.merge(self.stock_data,self.news_data,on="Datetime",how="left")
+            merged_data.reset_index(inplace=True)
+            merged_data_list.append(merged_data)
+            merged_data=pd.concat(merged_data_list)
+            merged_data.sort_values(by="Datetime",inplace=True)
+            merged_data.to_csv("yfiance_&_news_data_stock.csv")
+
+    def sentiment_analysis(self,text):
+        print("The description is ",text)
+        classifier=pipeline("zero-shot-classification",device=device)
+        candidate_labels=["Positive Sentiment","Neutral Sentiment","Negative Sentiment"]
+        result=classifier(text,candidate_labels)
+        return result["labels"][0]
+    
 
     def load_news_api(self,start_date,end_date,general=False):
         if general:
             newsapi = NewsApiClient(api_key=os.environ.get("NEWS_API_KEY"))
-            all_articles = newsapi.get_everything(q=f'Top USA news',
+            all_articles = newsapi.get_everything(q=f'Top Financial US news',
                                         from_param=str(start_date),
                                         to=str(end_date),
                                         language='en',
@@ -59,15 +108,19 @@ class Backtesting:
             content=[]
             url=[]
             date=[]
+            sentiment=[]
             for i in all_articles['articles']:
-                source_name.append(i["source"]["name"])
-                author.append(i['author'])
-                title.append(i["title"])
-                content.append(i["content"])
-                description.append(i["description"])
-                url.append(i["url"])    
-                date.append(datetime.strptime(i["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M"))
-            self.news_data=pd.DataFrame(data={"Datetime":date,"News Source":source_name,"News author":author,"News Headline":title,"News Description":description,"News URL":url,"News content":content})
+                if i["description"]:
+                    source_name.append(i["source"]["name"])
+                    author.append(i['author'])
+                    title.append(i["title"])
+                    content.append(i["content"])
+                    description.append(i["description"])
+                    sentiment.append(self.sentiment_analysis(i["description"]))
+                    url.append(i["url"])    
+                    date.append(datetime.strptime(i["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M"))
+               
+            self.news_data=pd.DataFrame(data={"Datetime":date,"News Source":source_name,"News author":author,"News Headline":title,"News Description":description,"News URL":url,"News content":content,"sentiment":sentiment})
             self.news_data.to_csv("news_data.csv",index=False)
             self.news_data.sort_values("Datetime",inplace=True)
             self.news_data['Datetime'] = pd.to_datetime(self.news_data['Datetime'])
@@ -77,7 +130,10 @@ class Backtesting:
             self.news_data = self.news_data.reindex(full_datetime_range, method='ffill')
             self.news_data.reset_index(inplace=True)
             self.news_data.rename(columns={'index': 'Datetime'}, inplace=True)
+            self.news_data.to_csv("news_data.csv")
+            self.integrate_yfiance_news(general)
         else:
+            print("The stock name is",self.stock_name,self.start_date)
             newsapi = NewsApiClient(api_key=os.environ.get("NEWS_API_KEY"))
             all_articles = newsapi.get_everything(q=f'{self.stock_name} news',
                                           from_param=str(start_date),
@@ -92,15 +148,17 @@ class Backtesting:
             content=[]
             url=[]
             date=[]
+            sentiment=[]
             for i in all_articles['articles']:
                 source_name.append(i["source"]["name"])
                 author.append(i['author'])
                 title.append(i["title"])
                 content.append(i["content"])
                 description.append(i["description"])
+                sentiment.append(self.sentiment_analysis(i["description"]))
                 url.append(i["url"])    
                 date.append(datetime.strptime(i["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M"))
-            self.news_data=pd.DataFrame(data={"Datetime":date,"News Source":source_name,"News author":author,"News Headline":title,"News Description":description,"News URL":url,"News content":content})
+            self.news_data=pd.DataFrame(data={"Datetime":date,"News Source":source_name,"News author":author,"News Headline":title,"News Description":description,"News URL":url,"News content":content,"sentiment":sentiment})
             self.news_data.to_csv("news_data.csv",index=False)
             self.news_data.sort_values("Datetime",inplace=True)
             self.news_data['Datetime'] = pd.to_datetime(self.news_data['Datetime'])
@@ -110,6 +168,7 @@ class Backtesting:
             self.news_data = self.news_data.reindex(full_datetime_range, method='ffill')
             self.news_data.reset_index(inplace=True)
             self.news_data.rename(columns={'index': 'Datetime'}, inplace=True)
+            self.integrate_yfiance_news(general)
 
     def database_connection(self):
         try:
@@ -282,29 +341,214 @@ class Backtesting:
         mape=(sum1*100)/len(actuals[0])
         return mape
     
+    def select_the_best_model(self,ts_ttrain,ts_ttest,ts_test,scalerP):
+        def objective(trial):
+            try:
+                input_chunk_length = trial.suggest_int('input_chunk_length', 5, 50)
+                output_chunk_length = trial.suggest_int('output_chunk_length', 1, 20)
+                batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128])
+                lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-2)
+                if self.model_name=="NBEATS":
+                    model = NBEATSModel(
+                        input_chunk_length=input_chunk_length,
+                        output_chunk_length=output_chunk_length,
+                        batch_size=batch_size,
+                        optimizer_kwargs={'lr': lr},
+                        n_epochs=3, 
+                        random_state=42
+                    )
+                    model.fit(series=ts_ttrain, 
+                            val_series=ts_ttest, 
+                            verbose=True)
+                    preds = model.predict(len(ts_ttest))
+                    score = self.calculate_mape(ts_test, scalerP.inverse_transform(preds))
+                    return score
+                elif self.model_name=="NHiTS":
+                    model = NHiTSModel(input_chunk_length=input_chunk_length, 
+                                    output_chunk_length=output_chunk_length, 
+                                    num_stacks=BLOCKS, 
+                                    num_blocks=NUM_BLOCKS,
+                                    layer_widths=LAYER_WIDTHS, 
+                                    pooling_kernel_sizes=POOLING_KERNEL_SIZES,
+                                    batch_size=batch_size, 
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": lr}, 
+                                    random_state=RAND, likelihood=QuantileRegression(QUANTILES)
+                                )
+                    model.fit(series=ts_ttrain, 
+                            val_series=ts_ttest, 
+                            verbose=True)
+                    preds = model.predict(len(ts_ttest))
+                    score = self.calculate_mape(ts_test, scalerP.inverse_transform(preds))
+                    return score
+                elif self.model_name=="TiDE":
+                    model = TiDEModel(input_chunk_length=input_chunk_length, 
+                                    output_chunk_length=output_chunk_length, 
+                                    hidden_size=LWIDTH,
+                                    batch_size=batch_size,
+                                    dropout=0.1,
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": lr}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    model.fit(series=ts_ttrain, 
+                            val_series=ts_ttest, 
+                            verbose=True)
+                    preds = model.predict(len(ts_ttest))
+                    score = self.calculate_mape(ts_test, scalerP.inverse_transform(preds))
+                    return score
+                else:
+                    model =  TSMixerModel(input_chunk_length=input_chunk_length, 
+                                    output_chunk_length=output_chunk_length, 
+                                    hidden_size=LWIDTH,
+                                    batch_size=batch_size,
+                                    dropout=0.1,
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": lr}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    model.fit(series=ts_ttrain, 
+                            val_series=ts_ttest, 
+                            verbose=True)
+                    preds = model.predict(len(ts_ttest))
+                    score = self.calculate_mape(ts_test, scalerP.inverse_transform(preds))
+                    return score
+            except Exception as e:
+                print("Its here",e)
+        self.models={}
+        min1=float("inf")
+        for model_name in ["NBEATS","NHiTS","TiDE","TSMixer"]:
+            try:
+                self.model_name=model_name
+                study = optuna.create_study(direction='minimize')
+                study.optimize(objective, n_trials=5)
+                best_params = study.best_params
+                best_value=study.best_value
+                if model_name=="NBEATS":
+                    model = NBEATSModel(input_chunk_length=best_params['input_chunk_length'],
+                                    output_chunk_length=best_params['output_chunk_length'], 
+                                    num_stacks=BLOCKS,
+                                    layer_widths=LWIDTH,
+                                    batch_size=best_params['batch_size'],
+                                    n_epochs=EPOCHS,
+                                    nr_epochs_val_period=VALWAIT, 
+                                    likelihood=QuantileRegression(QUANTILES), 
+                                    optimizer_kwargs={"lr": best_params['learning_rate']}, 
+                                    model_name="NBEATS_EnergyES",
+                                    log_tensorboard=True,
+                                    generic_architecture=True, 
+                                    random_state=RAND,
+                                    force_reset=True,
+                                    save_checkpoints=True)
+                    self.models[model_name]=model
+                elif model_name=="NHiTs":
+                    model = NHiTSModel(input_chunk_length=best_params['input_chunk_length'], 
+                                    output_chunk_length=best_params['output_chunk_length'], 
+                                    num_stacks=BLOCKS, 
+                                    num_blocks=NUM_BLOCKS,
+                                    layer_widths=LAYER_WIDTHS, 
+                                    pooling_kernel_sizes=POOLING_KERNEL_SIZES,
+                                    batch_size=best_params['batch_size'], 
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": best_params['learning_rate']}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    self.models[model_name]=model
+                elif model_name=="TiDE":
+                    model = TiDEModel(input_chunk_length=best_params['input_chunk_length'], 
+                                    output_chunk_length=best_params['output_chunk_length'], 
+                                    num_stacks=BLOCKS, 
+                                    num_blocks=NUM_BLOCKS,
+                                    layer_widths=LAYER_WIDTHS, 
+                                    pooling_kernel_sizes=POOLING_KERNEL_SIZES,
+                                    batch_size=best_params['batch_size'], 
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": best_params['learning_rate']}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    self.models[model_name]=model
+                else:
+                    model = TSMixerModel(input_chunk_length=best_params['input_chunk_length'], 
+                                    output_chunk_length=best_params['output_chunk_length'], 
+                                    num_blocks=NUM_BLOCKS,
+                                    batch_size=best_params['batch_size'], 
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": best_params['learning_rate']}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    self.models[model_name]=model
+            except Exception as e:
+                print("the model name:",self.model_name,e)
+                if model_name=="NBEATS":
+                    self.models[model_name]=NBEATSModel(input_chunk_length=INLEN,
+                                                        output_chunk_length=N_FC, 
+                                                        num_stacks=BLOCKS,
+                                                        layer_widths=LWIDTH,
+                                                        batch_size=BATCH,
+                                                        n_epochs=EPOCHS,
+                                                        nr_epochs_val_period=VALWAIT, 
+                                                        likelihood=QuantileRegression(QUANTILES), 
+                                                        optimizer_kwargs={"lr": LEARN}, 
+                                                        model_name="NBEATS_EnergyES",
+                                                        log_tensorboard=True,
+                                                        generic_architecture=True, 
+                                                        random_state=RAND,
+                                                        force_reset=True,
+                                                        save_checkpoints=True
+                                                    )
+                elif model_name=="NHiTs":
+                    self.models[model_name]=NHiTSModel(input_chunk_length=INLEN, output_chunk_length=N_FC, 
+                                                        num_stacks=BLOCKS, num_blocks=NUM_BLOCKS,
+                                                        layer_widths=LAYER_WIDTHS, pooling_kernel_sizes=POOLING_KERNEL_SIZES,
+                                                        batch_size=BATCH, n_epochs=EPOCHS, optimizer_kwargs={"lr": LEARN}, 
+                                                        random_state=RAND, likelihood=QuantileRegression(QUANTILES))
+
+                elif model_name=="TiDE":
+                    self.models[model_name]=TiDEModel(input_chunk_length=INLEN, output_chunk_length=N_FC, 
+                                                    hidden_size=LWIDTH, dropout=0.1, batch_size=BATCH,
+                                                    n_epochs=EPOCHS, optimizer_kwargs={"lr": LEARN}, random_state=RAND,
+                                                    likelihood=QuantileRegression(QUANTILES))
+
+                else:
+                    self.models[model_name]=TSMixerModel(input_chunk_length=INLEN, output_chunk_length=N_FC,
+                                                        hidden_size=LWIDTH, dropout=0.1,
+                                                        batch_size=BATCH, n_epochs=EPOCHS, optimizer_kwargs={"lr": LEARN},
+                                                        random_state=RAND, likelihood=QuantileRegression(QUANTILES))
+                continue
+            
+        model=self.models["NBEATS"]
+        model_final=None
+        for model_name, test_model in self.models.items():
+            try:
+                test_model.fit(series=ts_ttrain, 
+                        val_series=ts_ttest, 
+                        verbose=True)
+                ts_tpred = model.predict(n=len(ts_test), num_samples=N_SAMPLES, n_jobs=N_JOBS, verbose=True)
+                ts_tpred_rescaled = scalerP.inverse_transform(ts_tpred)
+                quantile_mapes = {f"Q{int(q*100)}": self.calculate_mape(ts_test, ts_tpred_rescaled.quantile_timeseries(q))
+                            for q in QUANTILES}
+                avg_mape = np.mean(list(quantile_mapes.values()))
+                if avg_mape<min1:
+                    min1=avg_mape
+                    model_final=model_name
+            except:
+                continue
+        if model_final:
+            model=self.models[model_final]
+        else:
+            model_final="NBEATS"
+        return model,model_final
+    
     def train_nbeats_model(self):
         print("The device used is",device)
         from datetime import time
         torch.set_float32_matmul_precision("low")
         vertical=self.stock_data
-        LOAD = False        
-        EPOCHS = 3
-        INLEN = 10
-        BLOCKS = 64         
-        LWIDTH = 32
-        BATCH = 32
-        LEARN = 1e-5
-        VALWAIT = 1         
-        N_FC = 1            
-        RAND = 42           
-        N_SAMPLES = 10 
-        N_JOBS = 3          
-        QUANTILES = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
-        SPLIT = 0.8 
-        qL1, qL2 = 0.01, 0.10        
-        qU1, qU2 = 1-qL1, 1-qL2,     
-        label_q1 = f'{int(qU1 * 100)} / {int(qL1 * 100)} percentile band'
-        label_q2 = f'{int(qU2 * 100)} / {int(qL2 * 100)} percentile band'
         final_verticals_df=[]
         vertical=vertical.loc[:,vertical.columns.str.contains("Datetime|Open")]
         vertical["Datetime"]=pd.to_datetime(vertical['Datetime'])
@@ -342,54 +586,60 @@ class Backtesting:
         ts_ttrain = scalerP.transform(ts_train)
         ts_ttest = scalerP.transform(ts_test)    
         ts_t = scalerP.transform(ts_P)
-        def objective(trial):
-            input_chunk_length = trial.suggest_int('input_chunk_length', 5, 50)  
-            output_chunk_length = trial.suggest_int('output_chunk_length', 1, 20)  
-            batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128])  
-            lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-2)
-            model = NBEATSModel(
-                input_chunk_length=input_chunk_length,
-                output_chunk_length=output_chunk_length,
-                batch_size=batch_size,
-                optimizer_kwargs={'lr': lr},
-                n_epochs=3,  
-                random_state=42
-            )
-            model.fit(series=ts_ttrain, 
-                    val_series=ts_ttest, 
-                    verbose=True)
-            preds = model.predict(len(ts_ttest))
-            score = self.calculate_mape_time_series(ts_test, preds)
-            return score
-        study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=10)
-        best_params = study.best_params
-        print(f"Best hyperparameters: {study.best_params}")
-        print(f"Best MAPE score: {study.best_value}")
-        with open("output1.txt","w") as file:
-            file.write(str(study.best_params)+" "+str(study.best_value))
-        model = NBEATSModel(input_chunk_length=best_params['input_chunk_length'],
-                            output_chunk_length=best_params['output_chunk_length'], 
-                            num_stacks=BLOCKS,
-                            layer_widths=LWIDTH,
-                            batch_size=best_params['batch_size'],
-                            n_epochs=EPOCHS,
-                            nr_epochs_val_period=VALWAIT, 
-                            likelihood=QuantileRegression(QUANTILES), 
-                            optimizer_kwargs={"lr": best_params['learning_rate']}, 
-                            model_name="NBEATS_EnergyES",
-                            log_tensorboard=True,
-                            generic_architecture=True, 
-                            random_state=RAND,
-                            force_reset=True,
-                            save_checkpoints=True
-                        )
-        if LOAD:
-                pass                           
-        else:
-            model.fit(series=ts_ttrain, 
-                    val_series=ts_ttest, 
-                    verbose=True)
+        # def objective(trial):
+        #     input_chunk_length = trial.suggest_int('input_chunk_length', 5, 50)  
+        #     output_chunk_length = trial.suggest_int('output_chunk_length', 1, 20)  
+        #     batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128])  
+        #     lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-2)
+        #     model = NBEATSModel(
+        #         input_chunk_length=input_chunk_length,
+        #         output_chunk_length=output_chunk_length,
+        #         batch_size=batch_size,
+        #         optimizer_kwargs={'lr': lr},
+        #         n_epochs=3,  
+        #         random_state=42
+        #     )
+        #     model.fit(series=ts_ttrain, 
+        #             val_series=ts_ttest, 
+        #             verbose=True)
+        #     preds = model.predict(len(ts_ttest))
+        #     score = self.calculate_mape_time_series(ts_test, preds)
+        #     return score
+        # study = optuna.create_study(direction='minimize')
+        # study.optimize(objective, n_trials=10)
+        # best_params = study.best_params
+        # print(f"Best hyperparameters: {study.best_params}")
+        # print(f"Best MAPE score: {study.best_value}")
+        # with open("output1.txt","w") as file:
+        #     file.write(str(study.best_params)+" "+str(study.best_value))
+        # model = NBEATSModel(input_chunk_length=best_params['input_chunk_length'],
+        #                     output_chunk_length=best_params['output_chunk_length'], 
+        #                     num_stacks=BLOCKS,
+        #                     layer_widths=LWIDTH,
+        #                     batch_size=best_params['batch_size'],
+        #                     n_epochs=EPOCHS,
+        #                     nr_epochs_val_period=VALWAIT, 
+        #                     likelihood=QuantileRegression(QUANTILES), 
+        #                     optimizer_kwargs={"lr": best_params['learning_rate']}, 
+        #                     model_name="NBEATS_EnergyES",
+        #                     log_tensorboard=True,
+        #                     generic_architecture=True, 
+        #                     random_state=RAND,
+        #                     force_reset=True,
+        #                     save_checkpoints=True
+        #                 )
+        # if LOAD:
+        #         pass                           
+        # else:
+        model,model_name=self.select_the_best_model(ts_ttrain,ts_ttest,ts_test,scalerP)
+        self.forecasting_algorithm=model_name
+        forecasting_alg_query=f"""
+                            insert into forecasting_algorithms (name) values('{bk.forecasting_algorithm}');
+                            """
+        self.insert_queries(forecasting_alg_query,"forecasting_algorithms")
+        model.fit(series=ts_ttrain, 
+                val_series=ts_ttest, 
+                verbose=True)
         q50_MAPE = np.inf
         ts_q50 = None
         pd.options.display.float_format = '{:,.2f}'.format
@@ -554,17 +804,23 @@ class Backtesting:
             # pd.DataFrame(data={"Actual":vertical_test["Open"].values,"Forecasted":output["Forecasted"].values}).to_csv("mape_calculations.csv")
 
 date=datetime.now().date()
-start_date=date-timedelta(days=7)
-end_date = start_date+timedelta(days=1)
-start_weekday=start_date.weekday()
-end_weekday=end_date.weekday() 
-training_period="1D"       
-bk=Backtesting(None,"Apple Inc","AAPL","Time GPT",start_date,date,training_period)
-bk.load_news_api(start_date-timedelta(days=23),date,False)
-bk.yfinance_api(True)
-bk.integrate_yfiance_news()
+for j in range(0,28,7):
+    # try:
+    start_date=date-timedelta(days=j+7)
+    end_date = start_date+timedelta(days=7)
+    print("Dates",start_date,end_date)
+    start_weekday=start_date.weekday()
+    end_weekday=end_date.weekday() 
+    training_period="1D"       
+    bk=Backtesting(None,"Tesla","TSLA","Time GPT",start_date,end_date,training_period)
+    bk.yfinance_api(True)
+    bk.load_news_api(start_date-timedelta(days=23-j),end_date,True)
+    # except Exception as e:
+    #     print(e)
+    #     continue
+
 exit()
-# exit()
+# # exit()
 # training_period="1D"
 # bk=Backtesting(None,"Apple Inc","AAPL","NBEATS",start_date,end_date,training_period)
 # stock_data_query=f"""
@@ -627,7 +883,7 @@ for stock_name,stock_ticker in zip(["Apple Inc","Amazon","Alphabet Inc.","Tesla 
             bk.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
             # exit()
             try:
-                bk.yfinance_api()
+                bk.yfinance_api(False)
             except Exception as e:
                 continue
             bk.train_nbeats_model()
@@ -655,7 +911,7 @@ for stock_name,stock_ticker in zip(["Apple Inc","Amazon","Alphabet Inc.","Tesla 
             bk.database_connection()
             bk.insert_queries(real_time_forecast_datetime_query,"real_time_forecast_datetime")
             try:
-                bk.yfinance_api()
+                bk.yfinance_api(False)
             except Exception as e:
                 continue
             bk.time_gpt_model()
