@@ -5,7 +5,7 @@ from pybroker import YFinance
 import pybroker
 from darts import TimeSeries, concatenate
 from darts.dataprocessing.transformers import Scaler
-from darts.models import NBEATSModel
+from darts.models import NBEATSModel, NHiTSModel, TiDEModel, TSMixerModel
 from darts.metrics import mape, rmse 
 from darts.utils.timeseries_generation import datetime_attribute_timeseries
 from darts.utils.likelihood_models import QuantileRegression
@@ -40,6 +40,29 @@ from selenium.webdriver.common.by import By
 from nixtla import NixtlaClient
 from dotenv import load_dotenv
 load_dotenv()
+device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+LOAD = False        
+EPOCHS = 3
+INLEN = 10
+BLOCKS = 64         
+LWIDTH = 32
+BATCH = 32
+LEARN = 1e-5
+VALWAIT = 1         
+N_FC = 1            
+RAND = 42           
+N_SAMPLES = 10 
+N_JOBS = 3          
+QUANTILES = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
+SPLIT = 0.8 
+qL1, qL2 = 0.01, 0.10        
+qU1, qU2 = 1-qL1, 1-qL2,     
+label_q1 = f'{int(qU1 * 100)} / {int(qL1 * 100)} percentile band'
+label_q2 = f'{int(qU2 * 100)} / {int(qL2 * 100)} percentile band'
+NUM_BLOCKS = 4
+LAYER_WIDTHS = 128
+POOLING_KERNEL_SIZES = [2, 2, 2]
+merged_data_list=[]
 
 # yfinance = YFinance()
 # df = yfinance.query(['AAPL'], start_date='3/1/2023', end_date='3/6/2024')
@@ -60,7 +83,6 @@ class StockPrediction():
         self.stock_data["Forecasted"]=[0]*len(self.stock_data)
         self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
         self.stock_data.to_csv(f"{self.stock_name}.csv")
-        # self.stock_data=pd.read_csv("AAPL.csv")
         self.stock_data["Forecasted"]=[0]*len(self.stock_data)
         self.stock_data["p_0.1"]=[0]*len(self.stock_data)
         self.stock_data["p_0.5"]=[0]*len(self.stock_data)
@@ -75,81 +97,242 @@ class StockPrediction():
         forecast_data = nixtla_client.forecast(ts_P, h=100, level=[80, 90])
         print("Forecast data\n",forecast_data)
 
+    def calculate_mape(self,forecasts,actuals):
+            sum1=0
+            mape=-1
+            forecasts=forecasts.pd_dataframe(forecasts).values
+            actuals=actuals.pd_dataframe(actuals).values
+            for i,j in zip(actuals[0],forecasts[0]):
+                if i==0:
+                    continue
+                sum1+=float(np.abs(i-j)/i)
+            if len(actuals[0])>0:
+                mape=(sum1*100)/len(actuals[0])
+            return mape
+    def select_the_best_model(self,ts_ttrain,ts_ttest,ts_test,scalerP):
+        def objective(trial):
+            try:
+                input_chunk_length = trial.suggest_int('input_chunk_length', 5, 50)
+                output_chunk_length = trial.suggest_int('output_chunk_length', 1, 20)
+                batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128])
+                lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-2)
+                if self.model_name=="NBEATS":
+                    model = NBEATSModel(
+                        input_chunk_length=input_chunk_length,
+                        output_chunk_length=output_chunk_length,
+                        batch_size=batch_size,
+                        optimizer_kwargs={'lr': lr},
+                        n_epochs=3, 
+                        random_state=42
+                    )
+                    model.fit(series=ts_ttrain, 
+                            val_series=ts_ttest, 
+                            verbose=True)
+                    preds = model.predict(len(ts_ttest))
+                    score = self.calculate_mape(ts_test, scalerP.inverse_transform(preds))
+                    return score
+                elif self.model_name=="NHiTS":
+                    model = NHiTSModel(input_chunk_length=input_chunk_length, 
+                                    output_chunk_length=output_chunk_length, 
+                                    num_stacks=BLOCKS, 
+                                    num_blocks=NUM_BLOCKS,
+                                    layer_widths=LAYER_WIDTHS, 
+                                    pooling_kernel_sizes=POOLING_KERNEL_SIZES,
+                                    batch_size=batch_size, 
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": lr}, 
+                                    random_state=RAND, likelihood=QuantileRegression(QUANTILES)
+                                )
+                    model.fit(series=ts_ttrain, 
+                            val_series=ts_ttest, 
+                            verbose=True)
+                    preds = model.predict(len(ts_ttest))
+                    score = self.calculate_mape(ts_test, scalerP.inverse_transform(preds))
+                    return score
+                elif self.model_name=="TiDE":
+                    model = TiDEModel(input_chunk_length=input_chunk_length, 
+                                    output_chunk_length=output_chunk_length, 
+                                    hidden_size=LWIDTH,
+                                    batch_size=batch_size,
+                                    dropout=0.1,
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": lr}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    model.fit(series=ts_ttrain, 
+                            val_series=ts_ttest, 
+                            verbose=True)
+                    preds = model.predict(len(ts_ttest))
+                    score = self.calculate_mape(ts_test, scalerP.inverse_transform(preds))
+                    return score
+                else:
+                    model =  TSMixerModel(input_chunk_length=input_chunk_length, 
+                                    output_chunk_length=output_chunk_length, 
+                                    hidden_size=LWIDTH,
+                                    batch_size=batch_size,
+                                    dropout=0.1,
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": lr}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    model.fit(series=ts_ttrain, 
+                            val_series=ts_ttest, 
+                            verbose=True)
+                    preds = model.predict(len(ts_ttest))
+                    score = self.calculate_mape(ts_test, scalerP.inverse_transform(preds))
+                    return score
+            except Exception as e:
+                print("Its here",e)
+        self.models={}
+        min1=float("inf")
+        for model_name in ["NBEATS","NHiTS","TiDE","TSMixer"]:
+            try:
+                self.model_name=model_name
+                study = optuna.create_study(direction='minimize')
+                study.optimize(objective, n_trials=5)
+                best_params = study.best_params
+                best_value=study.best_value
+                if model_name=="NBEATS":
+                    model = NBEATSModel(input_chunk_length=best_params['input_chunk_length'],
+                                    output_chunk_length=best_params['output_chunk_length'], 
+                                    num_stacks=BLOCKS,
+                                    layer_widths=LWIDTH,
+                                    batch_size=best_params['batch_size'],
+                                    n_epochs=EPOCHS,
+                                    nr_epochs_val_period=VALWAIT, 
+                                    likelihood=QuantileRegression(QUANTILES), 
+                                    optimizer_kwargs={"lr": best_params['learning_rate']}, 
+                                    model_name="NBEATS_EnergyES",
+                                    log_tensorboard=True,
+                                    generic_architecture=True, 
+                                    random_state=RAND,
+                                    force_reset=True,
+                                    save_checkpoints=True)
+                    self.models[model_name]=model
+                elif model_name=="NHiTs":
+                    model = NHiTSModel(input_chunk_length=best_params['input_chunk_length'], 
+                                    output_chunk_length=best_params['output_chunk_length'], 
+                                    num_stacks=BLOCKS, 
+                                    num_blocks=NUM_BLOCKS,
+                                    layer_widths=LAYER_WIDTHS, 
+                                    pooling_kernel_sizes=POOLING_KERNEL_SIZES,
+                                    batch_size=best_params['batch_size'], 
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": best_params['learning_rate']}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    self.models[model_name]=model
+                elif model_name=="TiDE":
+                    model = TiDEModel(input_chunk_length=best_params['input_chunk_length'], 
+                                    output_chunk_length=best_params['output_chunk_length'], 
+                                    num_stacks=BLOCKS, 
+                                    num_blocks=NUM_BLOCKS,
+                                    layer_widths=LAYER_WIDTHS, 
+                                    pooling_kernel_sizes=POOLING_KERNEL_SIZES,
+                                    batch_size=best_params['batch_size'], 
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": best_params['learning_rate']}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    self.models[model_name]=model
+                else:
+                    model = TSMixerModel(input_chunk_length=best_params['input_chunk_length'], 
+                                    output_chunk_length=best_params['output_chunk_length'], 
+                                    num_blocks=NUM_BLOCKS,
+                                    batch_size=best_params['batch_size'], 
+                                    n_epochs=3, 
+                                    optimizer_kwargs={"lr": best_params['learning_rate']}, 
+                                    random_state=RAND, 
+                                    likelihood=QuantileRegression(QUANTILES)
+                                )
+                    self.models[model_name]=model
+            except Exception as e:
+                print("the model name:",self.model_name,e)
+                if model_name=="NBEATS":
+                    self.models[model_name]=NBEATSModel(input_chunk_length=INLEN,
+                                                        output_chunk_length=N_FC, 
+                                                        num_stacks=BLOCKS,
+                                                        layer_widths=LWIDTH,
+                                                        batch_size=BATCH,
+                                                        n_epochs=EPOCHS,
+                                                        nr_epochs_val_period=VALWAIT, 
+                                                        likelihood=QuantileRegression(QUANTILES), 
+                                                        optimizer_kwargs={"lr": LEARN}, 
+                                                        model_name="NBEATS_EnergyES",
+                                                        log_tensorboard=True,
+                                                        generic_architecture=True, 
+                                                        random_state=RAND,
+                                                        force_reset=True,
+                                                        save_checkpoints=True
+                                                    )
+                elif model_name=="NHiTs":
+                    self.models[model_name]=NHiTSModel(input_chunk_length=INLEN, output_chunk_length=N_FC, 
+                                                        num_stacks=BLOCKS, num_blocks=NUM_BLOCKS,
+                                                        layer_widths=LAYER_WIDTHS, pooling_kernel_sizes=POOLING_KERNEL_SIZES,
+                                                        batch_size=BATCH, n_epochs=EPOCHS, optimizer_kwargs={"lr": LEARN}, 
+                                                        random_state=RAND, likelihood=QuantileRegression(QUANTILES))
 
+                elif model_name=="TiDE":
+                    self.models[model_name]=TiDEModel(input_chunk_length=INLEN, output_chunk_length=N_FC, 
+                                                    hidden_size=LWIDTH, dropout=0.1, batch_size=BATCH,
+                                                    n_epochs=EPOCHS, optimizer_kwargs={"lr": LEARN}, random_state=RAND,
+                                                    likelihood=QuantileRegression(QUANTILES))
 
-        
-        
-    def real_time_stock_market_data(self):
-        now=datetime.now()
-        print("Todays timestamp",now)
-        end_time = datetime.combine(now.date(), time(16, 40))
-        real_time_stock_data_list=[]
-        options={0:"Current Traded Price",1:"Open",2:"Day's Range",3:"52 week range",4:"Volume",5:"Volume",6:"Market Cap",7:"PE Ratio",8:"EPS",9:"1y Target Est"}
-        url=f"https://www.marketwatch.com/investing/stock/aapl"
-        interval=datetime.now()
-        while interval<=end_time:
-            interval=datetime.now()
-            chromeOptions = webdriver.ChromeOptions()
-            chromeOptions.add_argument("window-size=1200x600")
-            browser = webdriver.Chrome(options=chromeOptions)
-            url=f'https://finance.yahoo.com/quote/AAPL/'
-            browser.get(url)
-            fin_streamer =browser.find_element("xpath","/html/body/div[1]/main/section/section/section/article/section[1]/div[2]/div[1]/section/div/section/div[1]/fin-streamer[1]")
-            span_element = fin_streamer.find_element(By.TAG_NAME, 'span')
-            current_price = span_element.get_attribute('innerHTML')
-            print("Using device",device)
-            data={}
-            k=0
-            data["Datetime"]=interval.strftime('%Y-%m-%d %H:%M')
-            data["Traded Price"]=[current_price]
+                else:
+                    self.models[model_name]=TSMixerModel(input_chunk_length=INLEN, output_chunk_length=N_FC,
+                                                        hidden_size=LWIDTH, dropout=0.1,
+                                                        batch_size=BATCH, n_epochs=EPOCHS, optimizer_kwargs={"lr": LEARN},
+                                                        random_state=RAND, likelihood=QuantileRegression(QUANTILES))
+                continue
             
-            print("The data",data)
-            df=pd.DataFrame(data=data)
-            print(df.head())
-            df["Traded Price"]=df["Traded Price"].astype(float)
-            # df["Close"]=df["Close"].astype(float)
-            # df["Volume"]=df["Volume"].apply(lambda x:int(x.replace(",","")))
-            print(df.head())
+        model=self.models["NBEATS"]
+        model_final=None
+        min1=float("inf")
+        for model_name, test_model in self.models.items():
+            # try:
+            print("The model_name is",model_name)
+            test_model.fit(series=ts_ttrain, 
+                    val_series=ts_ttest, 
+                    verbose=True)
+            ts_tpred = test_model.predict(n=len(ts_ttest), num_samples=N_SAMPLES, n_jobs=N_JOBS, verbose=True)
+            ts_tpred_rescaled = scalerP.inverse_transform(ts_tpred)
+            quantile_mapes = {f"Q{int(q*100)}": self.calculate_mape(ts_test,  scalerP.inverse_transform(ts_tpred_rescaled.quantile_timeseries(q)))
+                        for q in QUANTILES}
+            avg_mape = np.mean(list(quantile_mapes.values()))
+            if avg_mape<min1:
+                min1=avg_mape
+                model_final=model_name
+            # except Exception as e:
+            #     print("Model selection exception",e)
+                # continue
+        print("The final is",model_final)
+        if model_final:
+            model=self.models[model_final]
+        else:
+            model_final="NBEATS"
             
-            real_time_stock_data_list.append(df)
-            self.real_time_data=pd.concat(real_time_stock_data_list)
-            # self.real_time_data=self.real_time_data[["Datetime","Open","Close","Volume"]]
-            self.real_time_data.to_csv(f"{self.stock_name}_real_time_data.csv",index=False)
-            # self.stock_data=pd.concat([self.stock_data,self.real_time_data])
-            # self.stock_data.to_csv(f"{self.stock_name}.csv",index=False)
-            time_new.sleep(60)
-   
-
+        return model,model_final
     def train_nbeats_model(self):
         print("The device used is",device)
         torch.set_float32_matmul_precision("low")
         vertical=self.stock_data
-        LOAD = False        
-        EPOCHS = 3
-        INLEN = 10
-        BLOCKS = 64         
-        LWIDTH = 32
-        BATCH = 32
-        LEARN = 1e-5
-        VALWAIT = 1         
-        N_FC = 1            
-        RAND = 42           
-        N_SAMPLES = 10 
-        N_JOBS = 3          
-        QUANTILES = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
-        SPLIT = 0.8 
-        qL1, qL2 = 0.01, 0.10        
-        qU1, qU2 = 1-qL1, 1-qL2,     
-        label_q1 = f'{int(qU1 * 100)} / {int(qL1 * 100)} percentile band'
-        label_q2 = f'{int(qU2 * 100)} / {int(qL2 * 100)} percentile band'
         final_verticals_df=[]
         vertical=vertical.loc[:,vertical.columns.str.contains("Datetime|Open")]
         vertical["Datetime"]=pd.to_datetime(vertical['Datetime'])
         vertical.rename(columns={"Datetime":"time"},inplace=True)
         ts_P = TimeSeries.from_dataframe(vertical,time_col="time",fill_missing_dates=True,freq="1min")
         ts_P=ts_P.pd_dataframe()
-        ts_P.to_csv("Values.csv")
-        ts_P.fillna(vertical["Open"].values[-1], inplace=True)
+        values=[]
+        for index,value in enumerate(ts_P["Open"]):
+            if str(value)=="nan":
+                values.append(values[index-1])
+            else:
+                values.append(value)
+        ts_P["Open"]=values
         ts_P = TimeSeries.from_dataframe(ts_P)
         ts_train, ts_test = ts_P.split_after(SPLIT) 
         scalerP = Scaler()
@@ -157,60 +340,11 @@ class StockPrediction():
         ts_ttrain = scalerP.transform(ts_train)
         ts_ttest = scalerP.transform(ts_test)    
         ts_t = scalerP.transform(ts_P)
-        def objective(trial):
-            # Define the hyperparameter search space
-            input_chunk_length = trial.suggest_int('input_chunk_length', 5, 50)  
-            output_chunk_length = trial.suggest_int('output_chunk_length', 1, 20)  
-            batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128])  
-            lr = trial.suggest_loguniform('learning_rate', 1e-6, 1e-2)
-            model = NBEATSModel(
-                input_chunk_length=input_chunk_length,
-                output_chunk_length=output_chunk_length,
-                batch_size=batch_size,
-                optimizer_kwargs={'lr': lr},
-                n_epochs=3,  
-                random_state=42
-            )
-
-            # Fit the model on the training data
-            model.fit(series=ts_ttrain, 
-                    val_series=ts_ttest, 
-                    verbose=True)
-            
-            # Evaluate the model on the validation set
-            preds = model.predict(len(ts_ttest))
-            score = mape(ts_test, preds)  # Use Mean Absolute Percentage Error as evaluation metric
-            
-            return score
-        study = optuna.create_study(direction='minimize')  # We minimize the evaluation metric, e.g., MAPE
-        study.optimize(objective, n_trials=10)
-        best_params = study.best_params
-        print(f"Best hyperparameters: {study.best_params}")
-        print(f"Best MAPE score: {study.best_value}")
-        with open("output1.txt","w") as file:
-            file.write(str(study.best_params)+" "+str(study.best_value))
-        model = NBEATSModel(input_chunk_length=best_params['input_chunk_length'],
-                            output_chunk_length=best_params['output_chunk_length'], 
-                            num_stacks=BLOCKS,
-                            layer_widths=LWIDTH,
-                            batch_size=best_params['batch_size'],
-                            n_epochs=EPOCHS,
-                            nr_epochs_val_period=VALWAIT, 
-                            likelihood=QuantileRegression(QUANTILES), 
-                            optimizer_kwargs={"lr": best_params['learning_rate']}, 
-                            model_name="NBEATS_EnergyES",
-                            log_tensorboard=True,
-                            generic_architecture=True, 
-                            random_state=RAND,
-                            force_reset=True,
-                            save_checkpoints=True
-                        )
-        if LOAD:
-                pass                           
-        else:
-            model.fit(series=ts_ttrain, 
-                    val_series=ts_ttest, 
-                    verbose=True)
+        
+        model,model_name=self.select_the_best_model(ts_ttrain,ts_ttest,ts_test,scalerP)
+        model.fit(series=ts_ttrain, 
+                val_series=ts_ttest, 
+                verbose=True)
         q50_MAPE = np.inf
         ts_q50 = None
         pd.options.display.float_format = '{:,.2f}'.format
@@ -265,64 +399,70 @@ class StockPrediction():
         column=column.split("_mape")[0]
         # output=output[(output["Datetime"]<pd.to_datetime(f"{start_date} 9:30")) & (output["Datetime"]<pd.to_datetime(f"{start_date} 16:00"))]
         self.stock_predictions.to_csv("predictions.csv")
-        rtp=pd.read_csv("real_time_predictions.csv")
-        rtp=rtp.loc[:,~rtp.columns.str.contains("^Unnamed")]
-        real_time_predictions=[rtp]
+        # rtp=pd.read_csv("real_time_predictions.csv")
+        # rtp=rtp.loc[:,~rtp.columns.str.contains("^Unnamed")]
+        # real_time_predictions=[rtp]
+        real_time_predictions=[]
         time=timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        if column=="p_0.1":
-            output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.9"]]
+        # if column=="p_0.1":
+        #     output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.9"]]
             
-            output["Open"]=[0]*len(output)
-            output.rename(columns={column:"Forecasted"},inplace=True)
-            os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
-            output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
-            real_time_predictions.append(output)
-            rtp=pd.concat(real_time_predictions)
-            rtp.drop_duplicates(inplace=True)
-            rtp.to_csv("real_time_predictions.csv",index=False)
-            self.stock_predictions=pd.concat([self.stock_data,output])
+        #     output["Open"]=[0]*len(output)
+        #     output.rename(columns={column:"Forecasted"},inplace=True)
+        #     os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
+        #     output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
+        #     real_time_predictions.append(output)
+        #     rtp=pd.concat(real_time_predictions)
+        #     rtp.drop_duplicates(inplace=True)
+        #     rtp.to_csv("real_time_predictions.csv",index=False)
+        #     self.stock_data.to_csv("stock_data.csv")
+        #     self.stock_predictions=pd.concat([self.stock_data,output])
             
-            data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
-        elif column=="p_0.5":
-            output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.9"]]
-            output[["Datetime",column]].to_csv("real_time_predictions.csv")
-            output=output[(output["Datetime"]>=vertical["time"].values[-1])]
-            output["Open"]=[0]*len(output)
-            output.rename(columns={column:"Forecasted"},inplace=True)
-            os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
-            output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
-            real_time_predictions.append(output)
-            rtp=pd.concat(real_time_predictions)
-            # rtp.drop_duplicates(inplace=True)
-            rtp.to_csv("real_time_predictions.csv",index=False)
-            self.stock_predictions=pd.concat([self.stock_data,output])
-            data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
-        elif column=="p_0.9":
-            output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.1","p_0.9"]]
-            output=output[(output["Datetime"]>=vertical["time"].values[-1])]
-            output["Open"]=[0]*len(output)
-            output.rename(columns={column:"Forecasted"},inplace=True)
-            os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
-            output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
-            real_time_predictions.append(output)
-            rtp=pd.concat(real_time_predictions)
-            rtp.drop_duplicates(inplace=True)
-            rtp.to_csv("real_time_predictions.csv",index=False)
-            self.stock_predictions=pd.concat([self.stock_data,output])
-            data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"length":len(self.stock_data)}
-        else:
-            self.stock_data[column]=[0]*len(self.stock_data)
-            output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.5","p_0.9"]]
-            output["Open"]=[0]*len(output)
-            output.rename(columns={column:"Forecasted"},inplace=True)
-            os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
-            output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
-            self.stock_predictions=pd.concat([self.stock_data,output])
-            real_time_predictions.append(output)
-            rtp=pd.concat(real_time_predictions)
-            rtp.drop_duplicates(inplace=True)
-            rtp.to_csv("real_time_predictions.csv",index=False)
-            data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data)}
+        #     data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
+        # elif column=="p_0.5":
+        #     output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.9"]]
+        #     output[["Datetime",column]].to_csv("real_time_predictions.csv")
+        #     output=output[(output["Datetime"]>=vertical["time"].values[-1])]
+        #     output["Open"]=[0]*len(output)
+        #     output.rename(columns={column:"Forecasted"},inplace=True)
+        #     os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
+        #     output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
+        #     real_time_predictions.append(output)
+        #     rtp=pd.concat(real_time_predictions)
+        #     # rtp.drop_duplicates(inplace=True)
+        #     rtp.to_csv("real_time_predictions.csv",index=False)
+        #     self.stock_data.to_csv("stock_data.csv")
+        #     self.stock_predictions=pd.concat([self.stock_data,output])
+        #     data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
+        # elif column=="p_0.9":
+        #     output=self.stock_predictions[["Datetime","p_0.5","p_0.1","p_0.9"]]
+        #     output["Forecasted"]=self.stock_predictions[column]
+        #     output=output[(output["Datetime"]>=vertical["time"].values[-1])]
+        #     output["Open"]=[0]*len(output)
+        #     os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
+        #     output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
+        #     real_time_predictions.append(output)
+        #     rtp=pd.concat(real_time_predictions)
+        #     rtp.drop_duplicates(inplace=True)
+        #     rtp.to_csv("real_time_predictions.csv",index=False)
+        #     self.stock_data.to_csv("stock_data.csv")
+        #     self.stock_predictions=pd.concat([self.stock_data,output])
+        #     data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
+        # else:
+        self.stock_data["Forecasted"]=[0]*len(self.stock_data)
+        output=self.stock_predictions[["Datetime","p_0.1","p_0.5","p_0.9"]]
+        output["Open"]=[0]*len(output)
+        output["Forecasted"]= self.stock_predictions[column]
+        # output.rename(columns={column:"Forecasted"},inplace=True)
+        os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
+        output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
+        self.stock_data.to_csv("stock_data.csv")
+        self.stock_predictions=pd.concat([self.stock_data,output])
+        real_time_predictions.append(output)
+        rtp=pd.concat(real_time_predictions)
+        rtp.drop_duplicates(inplace=True)
+        rtp.to_csv("real_time_predictions.csv",index=False)
+        data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
         self.stock_predictions.to_csv("predictions.csv")
         
         print(data)
@@ -382,22 +522,22 @@ class StockPrediction():
         plt.plot(output["date"][1:],output[column][:-1],color="b")
         plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         plt.show()
-date=datetime.now().date()
+# date=datetime.now().date()
 # weekday=date.weekday()
 # if weekday==0:
     # start_date=date-timedelta(days=5)
     # end_date=start_date+timedelta(days=2)
 # elif weekday!=5 and weekday!=6:
-start_date=date-timedelta(days=1)
-end_date=date+timedelta(days=1)
+# start_date=date-timedelta(days=2)
+# end_date=start_date+timedelta(days=1)
 
 
 # date_obj = datetime.strptime(end_date, "%Y-%m-%d")
 # new_date_obj = date_obj + timedelta(days=2)
 # new_date = new_date_obj.strftime("%Y-%m-%d")
-sp=StockPrediction("AAPL")
-sp.loading_stock_data(start_date,end_date)
-sp.time_gpt_model()
+# sp=StockPrediction("AAPL")
+# sp.loading_stock_data(start_date,end_date)
+# sp.time_gpt_model()
 # sp.real_time_stock_market_data()
 # sp.train_nbeats_model()
 # # sp.stock_test_plot(end_date,new_date)
