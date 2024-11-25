@@ -77,6 +77,7 @@ class StockPrediction():
         self.real_time_data=None
     
     def loading_stock_data(self,start_date,end_date):
+        print("Start Date",start_date,"End Date: ",end_date)
         self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date, prepost=True)
         self.stock_data.reset_index(inplace=True)
         self.stock_data=self.stock_data[["Datetime","Open"]]
@@ -294,7 +295,7 @@ class StockPrediction():
         min1=float("inf")
         for model_name, test_model in self.models.items():
             # try:
-            print("The model_name is",model_name)
+            
             test_model.fit(series=ts_ttrain, 
                     val_series=ts_ttest, 
                     verbose=True)
@@ -303,6 +304,7 @@ class StockPrediction():
             quantile_mapes = {f"Q{int(q*100)}": self.calculate_mape(ts_test,  scalerP.inverse_transform(ts_tpred_rescaled.quantile_timeseries(q)))
                         for q in QUANTILES}
             avg_mape = np.mean(list(quantile_mapes.values()))
+            print("The model_name is",model_name,avg_mape)
             if avg_mape<min1:
                 min1=avg_mape
                 model_final=model_name
@@ -397,58 +399,9 @@ class StockPrediction():
                 column=i
                 min1=val
         column=column.split("_mape")[0]
-        # output=output[(output["Datetime"]<pd.to_datetime(f"{start_date} 9:30")) & (output["Datetime"]<pd.to_datetime(f"{start_date} 16:00"))]
         self.stock_predictions.to_csv("predictions.csv")
-        # rtp=pd.read_csv("real_time_predictions.csv")
-        # rtp=rtp.loc[:,~rtp.columns.str.contains("^Unnamed")]
-        # real_time_predictions=[rtp]
         real_time_predictions=[]
         time=timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        # if column=="p_0.1":
-        #     output=self.stock_predictions[["Datetime",column,"p_0.5","p_0.9"]]
-            
-        #     output["Open"]=[0]*len(output)
-        #     output.rename(columns={column:"Forecasted"},inplace=True)
-        #     os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
-        #     output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
-        #     real_time_predictions.append(output)
-        #     rtp=pd.concat(real_time_predictions)
-        #     rtp.drop_duplicates(inplace=True)
-        #     rtp.to_csv("real_time_predictions.csv",index=False)
-        #     self.stock_data.to_csv("stock_data.csv")
-        #     self.stock_predictions=pd.concat([self.stock_data,output])
-            
-        #     data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
-        # elif column=="p_0.5":
-        #     output=self.stock_predictions[["Datetime",column,"p_0.1","p_0.9"]]
-        #     output[["Datetime",column]].to_csv("real_time_predictions.csv")
-        #     output=output[(output["Datetime"]>=vertical["time"].values[-1])]
-        #     output["Open"]=[0]*len(output)
-        #     output.rename(columns={column:"Forecasted"},inplace=True)
-        #     os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
-        #     output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
-        #     real_time_predictions.append(output)
-        #     rtp=pd.concat(real_time_predictions)
-        #     # rtp.drop_duplicates(inplace=True)
-        #     rtp.to_csv("real_time_predictions.csv",index=False)
-        #     self.stock_data.to_csv("stock_data.csv")
-        #     self.stock_predictions=pd.concat([self.stock_data,output])
-        #     data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
-        # elif column=="p_0.9":
-        #     output=self.stock_predictions[["Datetime","p_0.5","p_0.1","p_0.9"]]
-        #     output["Forecasted"]=self.stock_predictions[column]
-        #     output=output[(output["Datetime"]>=vertical["time"].values[-1])]
-        #     output["Open"]=[0]*len(output)
-        #     os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
-        #     output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
-        #     real_time_predictions.append(output)
-        #     rtp=pd.concat(real_time_predictions)
-        #     rtp.drop_duplicates(inplace=True)
-        #     rtp.to_csv("real_time_predictions.csv",index=False)
-        #     self.stock_data.to_csv("stock_data.csv")
-        #     self.stock_predictions=pd.concat([self.stock_data,output])
-        #     data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
-        # else:
         self.stock_data["Forecasted"]=[0]*len(self.stock_data)
         output=self.stock_predictions[["Datetime","p_0.1","p_0.5","p_0.9"]]
         output["Open"]=[0]*len(output)
@@ -456,16 +409,19 @@ class StockPrediction():
         # output.rename(columns={column:"Forecasted"},inplace=True)
         os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
         output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
+        history=pd.read_csv("history.csv")
+        history_data = output.iloc[[1]]
+        history=pd.concat([history,history_data])
+        history.to_csv("history.csv")
         self.stock_data.to_csv("stock_data.csv")
         self.stock_predictions=pd.concat([self.stock_data,output])
         real_time_predictions.append(output)
         rtp=pd.concat(real_time_predictions)
         rtp.drop_duplicates(inplace=True)
         rtp.to_csv("real_time_predictions.csv",index=False)
-        data={"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
+        data={"HDatetime":[str(i) for i in history["Datetime"]],"History":list(history["Forecasted"]),"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
         self.stock_predictions.to_csv("predictions.csv")
-        
-        print(data)
+    
         return data
         
     def stock_future_plot(self,start_date,end_date):
