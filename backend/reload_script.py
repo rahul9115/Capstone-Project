@@ -12,7 +12,8 @@ def fetch_data():
     "Authorization": "authorized"
     } 
     pd.DataFrame().to_csv("history.csv")
+    pd.DataFrame().to_csv("news.csv")
     while True:
         response=requests.get(url,headers=headers)
-        time_new.sleep(1200)
+        time_new.sleep(600)
 fetch_data()

@@ -39,6 +39,31 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from nixtla import NixtlaClient
 from dotenv import load_dotenv
+from langchain.prompts.prompt import PromptTemplate
+from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
+import httpx
+import ssl
+import pandas as pd
+import csv
+import io
+import os
+from langchain_openai import ChatOpenAI
+from langchain.prompts.prompt import PromptTemplate
+from langchain_core.tools import Tool
+from langchain.agents import (
+    create_react_agent,
+    AgentExecutor
+)
+from langchain import hub
+import httpx
+from langchain_community.utilities import SearchApiAPIWrapper
+from transformers import (AutoModelForCausalLM,
+                          AutoTokenizer,
+                          BitsAndBytesConfig,
+                          TrainingArguments,
+                          pipeline,
+                          logging)
 load_dotenv()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LOAD = False        
@@ -69,12 +94,13 @@ merged_data_list=[]
 
 # df['Datetime'] = pd.to_datetime(df['Datetime']).dt.date
 class StockPrediction():
-    def __init__(self,stock_name):
+    def __init__(self,stock_name,stock_complete_name):
         self.stock_name=stock_name
         self.stock_data=None
         self.stock_predictions=None
         self.actual_data=None
         self.real_time_data=None
+        self.stock_complete_name=stock_complete_name
     
     def loading_stock_data(self,start_date,end_date):
         print("Start Date",start_date,"End Date: ",end_date)
@@ -318,6 +344,39 @@ class StockPrediction():
             model_final="NBEATS"
             
         return model,model_final
+
+    def ai_agent(self) :
+        llm=ChatOpenAI(temperature=0)
+        summary_template = """
+        Please give me the important current news at this time pertaining to {name_of_stock} company . Don't give me the values
+        Get me those as the output.
+        """
+        search = SearchApiAPIWrapper()
+        summary_prompt_template = PromptTemplate(input_variables=["name_of_stock"], template=summary_template)
+        open_ai_key = os.environ['OPENAI_API_KEY']
+    
+        tools_for_agent=[
+            Tool(
+                name=f"Search for news",
+                func=search.run,
+                description=f"Useful for getting stock news"
+            )
+        ]
+        react_prompt=hub.pull("hwchase17/react")
+        agent=create_react_agent(llm=llm,tools=tools_for_agent,prompt=react_prompt)
+        agent_executor=AgentExecutor(agent=agent,tools=tools_for_agent,verbose=True,handle_parsing_errors=True)
+        result=agent_executor.invoke(
+            input={"input":summary_prompt_template.format_prompt(name_of_stock=self.stock_complete_name)}
+        )
+        return result
+
+    def sentiment_of_stock_news(self,stock_news):
+        print("Stock news",stock_news["output"])
+        classifier=pipeline("zero-shot-classification",device=device)
+        candidate_labels=["Positive Sentiment","Neutral Sentiment","Negative Sentiment"]
+        result=classifier(stock_news["output"],candidate_labels)
+        return result["labels"][0]
+ 
     def train_nbeats_model(self):
         print("The device used is",device)
         torch.set_float32_matmul_precision("low")
@@ -406,20 +465,24 @@ class StockPrediction():
         output=self.stock_predictions[["Datetime","p_0.1","p_0.5","p_0.9"]]
         output["Open"]=[0]*len(output)
         output["Forecasted"]= self.stock_predictions[column]
-        # output.rename(columns={column:"Forecasted"},inplace=True)
         os.makedirs(os.getcwd()+f"\\predictions\\{datetime.now().date()}",exist_ok=True)
         output.to_csv(os.getcwd()+f"\\predictions\\{datetime.now().date()}\\predictions_{time}.csv")
         history=pd.read_csv("history.csv")
         history_data = output.iloc[[1]]
         history=pd.concat([history,history_data])
-        history.to_csv("history.csv")
+        history.to_csv("history.csv",index=False)
         self.stock_data.to_csv("stock_data.csv")
         self.stock_predictions=pd.concat([self.stock_data,output])
         real_time_predictions.append(output)
         rtp=pd.concat(real_time_predictions)
         rtp.drop_duplicates(inplace=True)
         rtp.to_csv("real_time_predictions.csv",index=False)
-        data={"HDatetime":[str(i) for i in history["Datetime"]],"History":list(history["Forecasted"]),"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
+        stock_news=self.ai_agent()
+        sentiment=self.sentiment_of_stock_news(stock_news)
+        news_df=pd.read_csv("news.csv")
+        news_df_merged=pd.concat([news_df,pd.DataFrame(data={"NewsDatetime":[datetime.now().strftime("%Y-%m-%d_%H-%M-%S")],"News":[stock_news["output"]],"Sentiment":[sentiment]})])
+        news_df_merged.to_csv("news.csv")
+        data={"NewsDatetime":[str(i) for i in news_df_merged["NewsDatetime"]],"News":[str(i) for i in news_df_merged["News"]],"Sentiment":[str(i) for i in news_df_merged["Sentiment"]],"HDatetime":[str(i) for i in history["Datetime"]],"History":list(history["Forecasted"]),"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
         self.stock_predictions.to_csv("predictions.csv")
     
         return data
