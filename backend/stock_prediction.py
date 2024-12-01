@@ -64,6 +64,7 @@ from transformers import (AutoModelForCausalLM,
                           TrainingArguments,
                           pipeline,
                           logging)
+from sentence_transformers import SentenceTransformer, util
 load_dotenv()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LOAD = False        
@@ -72,14 +73,14 @@ INLEN = 10
 BLOCKS = 64         
 LWIDTH = 32
 BATCH = 32
-LEARN = 1e-5
+LEARN = 1e-2
 VALWAIT = 1         
 N_FC = 1            
 RAND = 42           
 N_SAMPLES = 10 
 N_JOBS = 3          
 QUANTILES = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
-SPLIT = 0.8 
+SPLIT = 0.9
 qL1, qL2 = 0.01, 0.10        
 qU1, qU2 = 1-qL1, 1-qL2,     
 label_q1 = f'{int(qU1 * 100)} / {int(qL1 * 100)} percentile band'
@@ -89,10 +90,6 @@ LAYER_WIDTHS = 128
 POOLING_KERNEL_SIZES = [2, 2, 2]
 merged_data_list=[]
 
-# yfinance = YFinance()
-# df = yfinance.query(['AAPL'], start_date='3/1/2023', end_date='3/6/2024')
-
-# df['Datetime'] = pd.to_datetime(df['Datetime']).dt.date
 class StockPrediction():
     def __init__(self,stock_name,stock_complete_name):
         self.stock_name=stock_name
@@ -102,11 +99,18 @@ class StockPrediction():
         self.real_time_data=None
         self.stock_complete_name=stock_complete_name
     
+    def winsorize_dataframe(self,df, column, lower_percentile=0.01, upper_percentile=0.99):
+        lower_bound = df[column].quantile(lower_percentile)
+        upper_bound = df[column].quantile(upper_percentile)
+        df[column] = df[column].clip(lower=lower_bound, upper=upper_bound)
+        return df
+    
     def loading_stock_data(self,start_date,end_date):
         print("Start Date",start_date,"End Date: ",end_date)
         self.stock_data = yf.download(tickers=self.stock_name, interval='1m', start=start_date,end=end_date, prepost=True)
         self.stock_data.reset_index(inplace=True)
         self.stock_data=self.stock_data[["Datetime","Open"]]
+       
         self.stock_data["Forecasted"]=[0]*len(self.stock_data)
         self.stock_data["Datetime"]=[datetime.fromisoformat(str(i)).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M') for i in self.stock_data["Datetime"]]
         self.stock_data.to_csv(f"{self.stock_name}.csv")
@@ -214,6 +218,7 @@ class StockPrediction():
                 print("Its here",e)
         self.models={}
         min1=float("inf")
+        # for model_name in ["NBEATS","NHiTS","TiDE","TSMixer"]:
         for model_name in ["NBEATS","NHiTS","TiDE","TSMixer"]:
             try:
                 self.model_name=model_name
@@ -255,10 +260,6 @@ class StockPrediction():
                 elif model_name=="TiDE":
                     model = TiDEModel(input_chunk_length=best_params['input_chunk_length'], 
                                     output_chunk_length=best_params['output_chunk_length'], 
-                                    num_stacks=BLOCKS, 
-                                    num_blocks=NUM_BLOCKS,
-                                    layer_widths=LAYER_WIDTHS, 
-                                    pooling_kernel_sizes=POOLING_KERNEL_SIZES,
                                     batch_size=best_params['batch_size'], 
                                     n_epochs=3, 
                                     optimizer_kwargs={"lr": best_params['learning_rate']}, 
@@ -348,8 +349,7 @@ class StockPrediction():
     def ai_agent(self) :
         llm=ChatOpenAI(temperature=0)
         summary_template = """
-        Please give me the important current news at this time pertaining to {name_of_stock} company . Don't give me the values
-        Get me those as the output.
+        Please give me the recent stock market impacting news articles related to {name_of_stock} company and summarize it for me.
         """
         search = SearchApiAPIWrapper()
         summary_prompt_template = PromptTemplate(input_variables=["name_of_stock"], template=summary_template)
@@ -381,9 +381,12 @@ class StockPrediction():
         print("The device used is",device)
         torch.set_float32_matmul_precision("low")
         vertical=self.stock_data
+        
         final_verticals_df=[]
         vertical=vertical.loc[:,vertical.columns.str.contains("Datetime|Open")]
         vertical["Datetime"]=pd.to_datetime(vertical['Datetime'])
+        vertical=self.winsorize_dataframe(vertical,"Open")
+        vertical.sort_values(by="Datetime",ascending=True,inplace=True)
         vertical.rename(columns={"Datetime":"time"},inplace=True)
         ts_P = TimeSeries.from_dataframe(vertical,time_col="time",fill_missing_dates=True,freq="1min")
         ts_P=ts_P.pd_dataframe()
@@ -402,7 +405,28 @@ class StockPrediction():
         ts_ttest = scalerP.transform(ts_test)    
         ts_t = scalerP.transform(ts_P)
         
-        model,model_name=self.select_the_best_model(ts_ttrain,ts_ttest,ts_test,scalerP)
+        # model,model_name=self.select_the_best_model(ts_ttrain,ts_ttest,ts_test,scalerP)
+        model_name="NBEATS"
+        model=NBEATSModel(input_chunk_length=INLEN,
+                            output_chunk_length=N_FC, 
+                            num_stacks=BLOCKS,
+                            layer_widths=LWIDTH,
+                            batch_size=BATCH,
+                            n_epochs=EPOCHS,
+                            nr_epochs_val_period=VALWAIT, 
+                            likelihood=QuantileRegression(QUANTILES), 
+                            optimizer_kwargs={"lr": LEARN}, 
+                            model_name="NBEATS_EnergyES",
+                            log_tensorboard=True,
+                            generic_architecture=True, 
+                            random_state=RAND,
+                            force_reset=True,
+                            save_checkpoints=True
+                        )
+        # model=TSMixerModel(input_chunk_length=INLEN, output_chunk_length=N_FC,
+        #                     hidden_size=LWIDTH, dropout=0.1,
+        #                     batch_size=BATCH, n_epochs=EPOCHS, optimizer_kwargs={"lr": LEARN},
+        #                     random_state=RAND, likelihood=QuantileRegression(QUANTILES))
         model.fit(series=ts_ttrain, 
                 val_series=ts_ttest, 
                 verbose=True)
@@ -479,9 +503,27 @@ class StockPrediction():
         rtp.to_csv("real_time_predictions.csv",index=False)
         stock_news=self.ai_agent()
         sentiment=self.sentiment_of_stock_news(stock_news)
+
+        model = SentenceTransformer('all-MiniLM-L6-v2')
         news_df=pd.read_csv("news.csv")
-        news_df_merged=pd.concat([news_df,pd.DataFrame(data={"NewsDatetime":[datetime.now().strftime("%Y-%m-%d_%H-%M-%S")],"News":[stock_news["output"]],"Sentiment":[sentiment]})])
-        news_df_merged.to_csv("news.csv")
+        not_similar=True
+        if len(news_df)>0:
+            for news in news_df["News"]:
+                embeddings = model.encode([news, stock_news["output"]])
+                if util.cos_sim(embeddings[0], embeddings[1])>0.70:
+                    not_similar=False
+                    break
+            if not_similar:
+                news_df_merged=pd.concat([news_df,pd.DataFrame(data={"NewsDatetime":[str(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))],"News":[stock_news["output"]],"Sentiment":[sentiment]})])
+                news_df_merged.drop_duplicates(subset=["News"],inplace=True)
+                news_df_merged.to_csv("news.csv")
+            else:
+                news_df_merged=news_df
+        else:
+            news_df_merged=pd.concat([news_df,pd.DataFrame(data={"NewsDatetime":[str(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))],"News":[stock_news["output"]],"Sentiment":[sentiment]})])
+            news_df_merged.drop_duplicates(subset=["News"],inplace=True)
+            news_df_merged.to_csv("news.csv")
+
         data={"NewsDatetime":[str(i) for i in news_df_merged["NewsDatetime"]],"News":[str(i) for i in news_df_merged["News"]],"Sentiment":[str(i) for i in news_df_merged["Sentiment"]],"HDatetime":[str(i) for i in history["Datetime"]],"History":list(history["Forecasted"]),"Datetime":[str(i) for i in self.stock_predictions["Datetime"]],"Open":list(self.stock_predictions["Open"]),"Forecasted":list(self.stock_predictions["Forecasted"]),"p10":list(self.stock_predictions["p_0.1"]),"p50":list(self.stock_predictions["p_0.5"]),"p90":list(self.stock_predictions["p_0.9"]),"length":len(self.stock_data),"Best Model":[model_name for _ in range(len((self.stock_predictions)))]}
         self.stock_predictions.to_csv("predictions.csv")
     
